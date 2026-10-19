@@ -49,6 +49,14 @@ describe("AccessControl", () => {
 		expect(access.isAuthenticated(undefined)).toBe(false);
 	});
 
+	it("signs everyone out when the access key changes", () => {
+		const before = new AccessControl(options);
+		const cookie = cookieValue(before.sessionCookie(false));
+		const rotated = new AccessControl({ ...options, key: "a brand new key" });
+		expect(before.isAuthenticated(cookie)).toBe(true);
+		expect(rotated.isAuthenticated(cookie)).toBe(false);
+	});
+
 	it("omits Secure on plain http", () => {
 		const access = new AccessControl(options);
 		expect(access.sessionCookie(false)).not.toContain("Secure");
@@ -65,5 +73,11 @@ describe("AttemptLimiter", () => {
 		expect(limiter.attempt("other", now)).toBe(true);
 		expect(limiter.retryAfterSeconds("ip", now)).toBe(60);
 		expect(limiter.attempt("ip", now + 60_001)).toBe(true);
+	});
+
+	it("keeps memory bounded under address rotation", () => {
+		const limiter = new AttemptLimiter(3, 60_000, 100);
+		for (let i = 0; i < 1000; i++) limiter.attempt(`client-${i}`, 1_000_000);
+		expect(limiter.size).toBeLessThanOrEqual(100);
 	});
 });

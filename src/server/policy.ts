@@ -3,6 +3,20 @@ import { isIPv4Literal, isIPv6Literal, isLocalHostname, isNonPublicAddress } fro
 
 export type PolicyDecision = { allowed: true } | { allowed: false; reason: string };
 
+const DNS_NAME = /^(?=.{1,253}$)[a-z0-9_-]{1,63}(?:\.[a-z0-9_-]{1,63})*$/;
+
+/**
+ * True for IP literals and well-formed DNS names. Anything else (NUL bytes, control characters,
+ * spaces, empty labels) is refused: the resolver would truncate or reinterpret it, so the name that
+ * was checked would not be the name that gets connected to.
+ */
+export function isValidHostname(hostname: string): boolean {
+	const host = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+	// Only characters a DNS name or IP literal can contain (no zone ids, NUL bytes or whitespace).
+	if (!host || /[^a-z0-9._:-]/.test(host)) return false;
+	return isIPv4Literal(host) || isIPv6Literal(host) || DNS_NAME.test(host);
+}
+
 /** "example.com" matches example.com itself and every subdomain of it. */
 export function hostMatches(hostname: string, entry: string): boolean {
 	const host = hostname.toLowerCase().replace(/\.$/, "");
@@ -34,7 +48,8 @@ export class DestinationPolicy {
 	/** Checks the hostname exactly as the client requested it (before DNS resolution). */
 	checkHost(hostname: string): PolicyDecision {
 		const host = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
-		if (!host) return { allowed: false, reason: "empty hostname" };
+		if (!isValidHostname(host)) return { allowed: false, reason: "invalid hostname" };
+		const isIp = isIPv4Literal(host) || isIPv6Literal(host);
 
 		if (!this.config.allowPrivate && (isLocalHostname(host) || isNonPublicAddress(host))) {
 			return { allowed: false, reason: "private or local destination" };
@@ -43,7 +58,6 @@ export class DestinationPolicy {
 			return { allowed: false, reason: "destination is on the blocklist" };
 		}
 		if (this.config.allowlist.length > 0) {
-			const isIp = isIPv4Literal(host) || isIPv6Literal(host);
 			if (isIp || !this.config.allowlist.some((entry) => hostMatches(host, entry))) {
 				return { allowed: false, reason: "destination is not on the allowlist" };
 			}

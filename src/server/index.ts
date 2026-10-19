@@ -22,7 +22,13 @@ async function main() {
 	server.on("request", app);
 
 	server.on("upgrade", (request, socket, head) => {
-		if (gateway.handleUpgrade(request, socket, head)) return;
+		try {
+			if (gateway.handleUpgrade(request, socket, head)) return;
+		} catch (error) {
+			logger.warn("Failed to handle a WebSocket upgrade:", error);
+			socket.destroy();
+			return;
+		}
 		// In development Vite registers its own upgrade listener for hot reload; leave those sockets alone.
 		if (!config.dev) socket.destroy();
 	});

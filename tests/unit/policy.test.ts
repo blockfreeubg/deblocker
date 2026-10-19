@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DestinationPolicy, hostMatches, hostPatternRegex } from "../../src/server/policy.js";
+import { DestinationPolicy, hostMatches, hostPatternRegex, isValidHostname } from "../../src/server/policy.js";
 
 const base = { ports: [80, 443] as number[] | "any", allowPrivate: false, allowlist: [] as string[], blocklist: [] as string[] };
 
@@ -59,6 +59,22 @@ describe("DestinationPolicy", () => {
 		expect(policy.check("upload.wikimedia.org", 443).allowed).toBe(true);
 		expect(policy.check("example.com", 443).allowed).toBe(false);
 		expect(policy.check("1.1.1.1", 443).allowed).toBe(false);
+	});
+
+	it.each(["evil.com\0.allowed.com", "blocked.com\0", "1.2.3.4\0.allowed.com", "localhost\0", "a..allowed.com", "bad host.allowed.com", "::1%eth0", "", "x".repeat(254)])(
+		"refuses malformed hostname %j",
+		(host) => {
+			const policy = new DestinationPolicy({ ...base, allowPrivate: true, allowlist: ["allowed.com"], blocklist: ["blocked.com"] });
+			expect(policy.check(host, 443)).toMatchObject({ allowed: false });
+		},
+	);
+
+	it("accepts ordinary names, underscores and IP literals", () => {
+		expect(isValidHostname("my_host.example.com")).toBe(true);
+		expect(isValidHostname("EXAMPLE.com.")).toBe(true);
+		expect(isValidHostname("[2606:4700::1111]")).toBe(true);
+		expect(isValidHostname("::ffff:1.2.3.4")).toBe(true);
+		expect(isValidHostname("example.com\0")).toBe(false);
 	});
 
 	it("lets the blocklist win over the allowlist", () => {

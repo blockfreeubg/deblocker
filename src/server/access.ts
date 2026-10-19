@@ -21,7 +21,9 @@ export class AccessControl {
 	constructor(private readonly options: AccessControlOptions) {
 		this.required = options.key !== null;
 		this.keyDigest = options.key === null ? null : sha256(options.key);
-		this.secret = options.sessionSecret ? Buffer.from(options.sessionSecret, "utf8") : randomBytes(32);
+		const base = options.sessionSecret ? Buffer.from(options.sessionSecret, "utf8") : randomBytes(32);
+		// Bind sessions to the key itself, so changing ACCESS_KEY signs everyone out.
+		this.secret = this.keyDigest ? createHmac("sha256", base).update("deblocker-session-v1\0").update(this.keyDigest).digest() : base;
 	}
 
 	verifyKey(candidate: unknown): boolean {
@@ -77,20 +79,23 @@ export function readCookie(header: string | undefined, name: string): string | n
 	return null;
 }
 
-/** Fixed-window attempt counter, used to slow down access-key guessing. */
+/** Fixed-window attempt counter, used to slow down access-key guessing. Memory use is bounded. */
 export class AttemptLimiter {
 	private readonly windows = new Map<string, { count: number; resetAt: number }>();
+	private lastSweep = 0;
 
 	constructor(
 		private readonly maxAttempts: number,
 		private readonly windowMs: number,
+		private readonly maxKeys = 10_000,
 	) {}
 
 	/** Records an attempt and returns false when the caller is over the limit. */
 	attempt(key: string, now = Date.now()): boolean {
-		if (this.windows.size > 10_000) this.sweep(now);
+		if (this.windows.size >= this.maxKeys) this.makeRoom(now);
 		const entry = this.windows.get(key);
 		if (!entry || entry.resetAt <= now) {
+			this.windows.delete(key);
 			this.windows.set(key, { count: 1, resetAt: now + this.windowMs });
 			return true;
 		}
@@ -103,7 +108,19 @@ export class AttemptLimiter {
 		return entry ? Math.max(1, Math.ceil((entry.resetAt - now) / 1000)) : 0;
 	}
 
-	private sweep(now: number) {
-		for (const [key, entry] of this.windows) if (entry.resetAt <= now) this.windows.delete(key);
+	get size(): number {
+		return this.windows.size;
+	}
+
+	private makeRoom(now: number) {
+		if (now - this.lastSweep > 60_000) {
+			this.lastSweep = now;
+			for (const [key, entry] of this.windows) if (entry.resetAt <= now) this.windows.delete(key);
+		}
+		// Still full: forget the oldest windows (Map iteration follows insertion order).
+		for (const key of this.windows.keys()) {
+			if (this.windows.size < this.maxKeys) break;
+			this.windows.delete(key);
+		}
 	}
 }

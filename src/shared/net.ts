@@ -111,3 +111,19 @@ export function isLocalHostname(hostname: string): boolean {
 		host === "ip6-loopback"
 	);
 }
+
+/**
+ * Key for per-client rate limits: IPv4 addresses as-is (IPv4-mapped IPv6 unwrapped) and IPv6
+ * addresses by their /64 prefix, since a single subscriber or server usually controls a whole /64.
+ */
+export function clientKey(address: string): string {
+	const v6 = expandIPv6(address);
+	if (!v6) return address;
+	if (v6.slice(0, 5).every((group) => group === 0) && v6[5] === 0xffff) {
+		return [v6[6]! >> 8, v6[6]! & 0xff, v6[7]! >> 8, v6[7]! & 0xff].join(".");
+	}
+	return `${v6
+		.slice(0, 4)
+		.map((group) => group.toString(16))
+		.join(":")}::/64`;
+}

@@ -7,8 +7,10 @@ import { AccessControl, AttemptLimiter } from "./access.js";
 import { toPublicConfig, type ServerConfig } from "./config.js";
 import { createEngineHandler, locateEngineFiles } from "./engine.js";
 import type { Logger } from "./logger.js";
+import { isAllowedOrigin } from "./http-utils.js";
 import { DestinationPolicy } from "./policy.js";
 import { configureWisp, WispGateway } from "./wisp.js";
+import { clientKey } from "../shared/net.js";
 import type { SessionState } from "../shared/public-config.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -37,19 +39,12 @@ function securityHeaders(_req: Request, res: Response, next: NextFunction) {
 	next();
 }
 
-/** Rejects state-changing API calls that come from another site. */
-function sameOriginOnly(req: Request, res: Response, next: NextFunction) {
-	const origin = req.headers.origin;
-	if (origin) {
-		try {
-			if (new URL(origin).host === req.headers.host) return next();
-		} catch {
-			// fall through
-		}
+/** Rejects state-changing API calls from other sites, using the same origin rule as the Wisp endpoint. */
+function sameOriginOnly(config: ServerConfig) {
+	return (req: Request, res: Response, next: NextFunction) => {
+		if (!req.headers.origin || isAllowedOrigin(req, config.allowedOrigins, config.trustProxy !== false)) return next();
 		res.status(403).json({ error: "Cross-site requests are not allowed." });
-		return;
-	}
-	next();
+	};
 }
 
 export interface CreateAppOptions {
@@ -65,6 +60,7 @@ export async function createApp(config: ServerConfig, logger: Logger, httpServer
 	const policy = new DestinationPolicy(config.destinations);
 	const access = new AccessControl({ ...config.access, cookiePath: config.basePath });
 	const unlockLimiter = new AttemptLimiter(10, 15 * 60 * 1000);
+	const globalUnlockLimiter = new AttemptLimiter(300, 15 * 60 * 1000);
 	const publicConfig = toPublicConfig(config, version, engine.versions);
 
 	configureWisp(config, policy, logger);
@@ -105,15 +101,17 @@ export async function createApp(config: ServerConfig, logger: Logger, httpServer
 		res.json(state);
 	});
 
-	router.post("/api/session", sameOriginOnly, express.json({ limit: "4kb" }), (req, res) => {
+	router.post("/api/session", sameOriginOnly(config), express.json({ limit: "4kb" }), (req, res) => {
 		res.setHeader("Cache-Control", "no-store");
 		if (!access.required) {
 			res.json({ required: false, authenticated: true } satisfies SessionState);
 			return;
 		}
 		const ip = req.ip ?? "unknown";
-		if (!unlockLimiter.attempt(ip)) {
-			res.setHeader("Retry-After", String(unlockLimiter.retryAfterSeconds(ip)));
+		const client = clientKey(ip);
+		// Per client (IPv6 by /64), plus a global ceiling so address rotation can't buy unlimited guesses.
+		if (!unlockLimiter.attempt(client) || !globalUnlockLimiter.attempt("all")) {
+			res.setHeader("Retry-After", String(Math.max(unlockLimiter.retryAfterSeconds(client), globalUnlockLimiter.retryAfterSeconds("all"))));
 			res.status(429).json({ error: "Too many attempts. Try again later." });
 			return;
 		}
@@ -127,7 +125,7 @@ export async function createApp(config: ServerConfig, logger: Logger, httpServer
 		res.json({ required: true, authenticated: true } satisfies SessionState);
 	});
 
-	router.delete("/api/session", sameOriginOnly, (req, res) => {
+	router.delete("/api/session", sameOriginOnly(config), (req, res) => {
 		res.setHeader("Cache-Control", "no-store");
 		res.setHeader("Set-Cookie", access.clearedCookie(req.secure));
 		res.json({ required: access.required, authenticated: !access.required } satisfies SessionState);

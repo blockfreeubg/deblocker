@@ -29,8 +29,15 @@ declare module "@mercuryworkshop/wisp-js/server" {
 		wisp_motd: string | null;
 	}
 
+	export class ServerConnection {
+		constructor(ws: unknown, path: string, options?: { wisp_version?: 1 | 2; TCPSocket?: unknown; UDPSocket?: unknown });
+		setup(): Promise<void>;
+		run(): Promise<void>;
+	}
+
 	export const server: {
 		options: WispServerOptions;
+		ServerConnection: typeof ServerConnection;
 		routeRequest(request: IncomingMessage, socket: Duplex, head: Buffer, connectionOptions?: Record<string, unknown>): void;
 	};
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isLocalHostname, isNonPublicAddress } from "../../src/shared/net.js";
+import { clientKey, isLocalHostname, isNonPublicAddress } from "../../src/shared/net.js";
 
 describe("isNonPublicAddress", () => {
 	it.each([
@@ -53,5 +53,15 @@ describe("isLocalHostname", () => {
 	});
 	it.each(["example.com", "localhost.example.com", "local.example"])("allows %s", (host) => {
 		expect(isLocalHostname(host)).toBe(false);
+	});
+});
+
+describe("clientKey", () => {
+	it("groups IPv6 clients by /64 and unwraps IPv4-mapped addresses", () => {
+		expect(clientKey("203.0.113.9")).toBe("203.0.113.9");
+		expect(clientKey("::ffff:203.0.113.9")).toBe("203.0.113.9");
+		expect(clientKey("2001:db8:1:2:aaaa::1")).toBe("2001:db8:1:2::/64");
+		expect(clientKey("2001:db8:1:2:bbbb:cccc:dddd:eeee")).toBe("2001:db8:1:2::/64");
+		expect(clientKey("unknown")).toBe("unknown");
 	});
 });
