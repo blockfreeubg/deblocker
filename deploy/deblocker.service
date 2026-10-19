@@ -1,0 +1,37 @@
+# systemd unit for Deblocker. Install:
+#   sudo cp deploy/deblocker.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now deblocker
+# Logs: journalctl -u deblocker -f
+
+[Unit]
+Description=Deblocker web proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=deblocker
+Group=deblocker
+WorkingDirectory=/opt/deblocker
+# Settings live in /etc/deblocker.env (same format as .env.example).
+EnvironmentFile=-/etc/deblocker.env
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node dist/server/index.js
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/deblocker
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,155 @@
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+
+html,
+body {
+	height: 100%;
+	margin: 0;
+}
+
+body {
+	background: var(--bg);
+	color: var(--text);
+	font-family: var(--font);
+	font-size: var(--fs-md);
+	line-height: 1.45;
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+	overflow: hidden;
+	overscroll-behavior: none;
+}
+
+button,
+input,
+select,
+textarea {
+	font: inherit;
+	color: inherit;
+}
+
+button {
+	cursor: pointer;
+	background: none;
+	border: 0;
+	padding: 0;
+}
+
+button:disabled {
+	cursor: default;
+}
+
+a {
+	color: var(--accent-lit);
+	text-decoration: none;
+}
+
+a:hover {
+	text-decoration: underline;
+}
+
+svg.icon {
+	display: block;
+	flex: none;
+	width: 16px;
+	height: 16px;
+	fill: none;
+	stroke: currentColor;
+	stroke-width: 2;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+
+:focus {
+	outline: none;
+}
+
+:focus-visible {
+	outline: 2px solid var(--accent-lit);
+	outline-offset: 2px;
+}
+
+input:focus-visible,
+textarea:focus-visible {
+	outline: none;
+}
+
+::selection {
+	background: var(--accent-tint);
+	color: var(--text);
+}
+
+* {
+	scrollbar-width: thin;
+	scrollbar-color: var(--line-strong) transparent;
+}
+
+::-webkit-scrollbar {
+	width: 10px;
+	height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+	background: var(--line-strong);
+	border: 3px solid transparent;
+	border-radius: var(--r-pill);
+	background-clip: content-box;
+}
+
+::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+.sr-only {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	margin: -1px;
+	overflow: hidden;
+	clip: rect(0, 0, 0, 0);
+	white-space: nowrap;
+	border: 0;
+}
+
+[hidden] {
+	display: none !important;
+}
+
+kbd {
+	display: inline-block;
+	min-width: 20px;
+	padding: 1px 6px;
+	border: 1px solid var(--line-strong);
+	border-bottom-width: 2px;
+	border-radius: var(--r-xs);
+	background: var(--panel-2);
+	color: var(--text-dim);
+	font: 500 var(--fs-xs) / 1.5 var(--font);
+	text-align: center;
+}
+
+@keyframes spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+@keyframes fade-up {
+	from {
+		opacity: 0;
+		transform: translateY(6px);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+	}
+}

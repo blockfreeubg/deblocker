@@ -1,0 +1,17 @@
+# Deblocker behind Caddy. Caddy obtains and renews HTTPS certificates automatically and
+# proxies WebSockets (the Wisp endpoint) without extra configuration.
+# Pair with: HOST=127.0.0.1 TRUST_PROXY=loopback in Deblocker's environment.
+
+proxy.example.com {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8080
+}
+
+# Sub-path variant: set BASE_PATH=/deblocker and use `handle` (not `handle_path`,
+# which would strip the prefix that Deblocker expects to see):
+#
+# example.com {
+# 	handle /deblocker* {
+# 		reverse_proxy 127.0.0.1:8080
+# 	}
+# }

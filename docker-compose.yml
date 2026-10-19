@@ -1,0 +1,14 @@
+services:
+  deblocker:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080" # put a TLS-terminating reverse proxy in front (see deploy/)
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Fixed here so values in .env can't break the port mapping above.
+      HOST: "0.0.0.0"
+      PORT: "8080"
+      TRUST_PROXY: "1"
