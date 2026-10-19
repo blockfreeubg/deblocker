@@ -65,6 +65,10 @@ export async function startTargetSite(): Promise<TargetSite> {
 				if (!preread) for await (const chunk of req) body += chunk;
 				return html(200, page("Echo", `<pre id="echo">${req.method} ${body.replace(/</g, "&lt;")}</pre>`));
 			}
+			case "/cookie/set":
+				return html(200, page("Cookie Set", `<p id="cookie">set</p>`), { "set-cookie": "flavour=oatmeal; Path=/; Max-Age=3600" });
+			case "/cookie/show":
+				return html(200, page("Cookie Show", `<p id="cookie">${(req.headers.cookie ?? "none").replace(/</g, "&lt;")}</p>`));
 			case "/search":
 				return html(200, page(`Results for ${url.searchParams.get("q") ?? ""}`, `<p id="query">${(url.searchParams.get("q") ?? "").replace(/</g, "&lt;")}</p>`));
 			case "/slow":

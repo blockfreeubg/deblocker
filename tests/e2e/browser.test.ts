@@ -267,6 +267,44 @@ suite("browsing through Scramjet", () => {
 		await other.close();
 	});
 
+	it("handles Deblocker shortcuts while a proxied page has focus", async () => {
+		await go(page, `${target.origin}/two`);
+		const frame = await activeFrame(page);
+		await frame.waitForSelector("#push");
+		await frame.focus("input[name=message]");
+		const tabs = await page.locator(".tab").count();
+		await page.keyboard.press("Alt+T");
+		await expect.poll(() => page.locator(".tab").count()).toBe(tabs + 1);
+		await page.keyboard.press("Alt+W");
+		await expect.poll(() => page.locator(".tab").count()).toBe(tabs);
+	});
+
+	it("shows the page in full screen", async () => {
+		await page.click("#fullscreenBtn");
+		await expect.poll(() => page.evaluate(() => document.fullscreenElement?.tagName ?? null)).toBe("IFRAME");
+		await page.evaluate(() => document.exitFullscreen());
+	});
+
+	it("keeps proxied cookies until site data is cleared", async () => {
+		await go(page, `${target.origin}/cookie/set`);
+		let frame = await activeFrame(page);
+		await frame.waitForSelector("#cookie");
+		await go(page, `${target.origin}/cookie/show`);
+		frame = await activeFrame(page);
+		await expect.poll(() => frame.textContent("#cookie").catch(() => "")).toContain("flavour=oatmeal");
+
+		page.once("dialog", (dialog) => void dialog.accept());
+		await page.click('.rail-btn[data-nav="settings"]');
+		await page.click('.settings-nav-btn:has-text("privacy")');
+		await page.click('button:has-text("clear data")');
+		await page.waitForSelector('.toast:has-text("Site data cleared")');
+		expect(await page.locator(".tab").count()).toBe(1);
+
+		await go(page, `${target.origin}/cookie/show`);
+		frame = await activeFrame(page);
+		await expect.poll(() => frame.textContent("#cookie").catch(() => "")).toBe("none");
+	});
+
 	it("did not throw uncaught errors in the Deblocker page", () => {
 		expect((page as Page & { errors?: string[] }).errors ?? []).toEqual([]);
 	});

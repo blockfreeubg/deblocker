@@ -20,6 +20,7 @@ interface ScramjetFrame {
 	hooks: {
 		init: { post: unknown };
 		error: { request: unknown };
+		fetch: { preresponse: unknown };
 	};
 	go(url: string): void;
 	reload(): void;
@@ -424,8 +425,23 @@ class ScramjetEngine implements ProxyEngine {
 
 		// Plugins are bound to a single frame, so each frame gets its own HTTP cache plugin instance.
 		const utils = window.$scramjetUtils;
-		const frame = controller.createFrame(iframe, { plugins: utils ? [new utils.HttpCachePlugin()] : [] });
+		const cache = utils ? new utils.HttpCachePlugin() : null;
+		const frame = controller.createFrame(iframe, { plugins: cache ? [cache] : [] });
 		const plugin = new scramjet.Plugin("deblocker");
+
+		// scramjet-utils 0.0.3's HttpCachePlugin rebuilds cacheable responses with `new Response()`, which
+		// silently drops Set-Cookie, so sign-ins and other cookies would be lost. Mark such responses as
+		// already handled so the cache plugin leaves them untouched (it checks this map first).
+		const handled = (cache as { cameFromCache?: unknown } | null)?.cameFromCache;
+		if (handled instanceof WeakMap) {
+			plugin.tap(
+				frame.hooks.fetch.preresponse,
+				(context: { request: object }, props: { response: { rawHeaders: Array<[string, string]> } }) => {
+					if (props.response.rawHeaders.some(([name]) => /^set-cookie2?$/i.test(name))) handled.set(context.request, true);
+				},
+				{ before: ["scramjet-http-cache"] },
+			);
+		}
 
 		plugin.tap(frame.hooks.init.post, (context: { isTopLevel: boolean; window: Window; client: any }) => {
 			try {
