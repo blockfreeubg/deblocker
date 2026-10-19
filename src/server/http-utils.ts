@@ -1,6 +1,7 @@
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import proxyaddr from "proxy-addr";
+import { isIPv4Literal, isIPv6Literal } from "../shared/net.js";
 
 export type TrustFunction = (address: string, hop: number) => boolean;
 
@@ -67,4 +68,23 @@ export function isAllowedOrigin(request: IncomingMessage, allowedOrigins: string
 		if (first) hosts.add(first);
 	}
 	return hosts.has(parsed.host.toLowerCase());
+}
+
+/**
+ * While private destinations are allowed, a website whose DNS name is re-pointed at this server
+ * (DNS rebinding) would pass the Origin check, since Origin and Host then both carry that name.
+ * Such requests are told apart by the name in Host: only IP literals, localhost and the hosts of
+ * ALLOWED_ORIGINS are accepted.
+ */
+export function isRebindingSafeHost(request: IncomingMessage, allowedOrigins: string[]): boolean {
+	let hostname: string;
+	try {
+		hostname = new URL(`http://${request.headers.host ?? ""}`).hostname;
+	} catch {
+		return false;
+	}
+	const bare = hostname.replace(/^\[|\]$/g, "");
+	if (isIPv4Literal(bare) || isIPv6Literal(bare)) return true;
+	if (hostname === "localhost" || hostname.endsWith(".localhost")) return true;
+	return allowedOrigins.some((origin) => new URL(origin).hostname === hostname);
 }

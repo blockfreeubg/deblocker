@@ -51,10 +51,11 @@
 /* ---------- shell layout ---------- */
 .shell {
 	display: grid;
-	grid-template-rows: var(--tabbar-h) var(--toolbar-h) 0 minmax(0, 1fr);
+	grid-template-rows: calc(var(--tabbar-h) + env(safe-area-inset-top, 0px)) var(--toolbar-h) 0 minmax(0, 1fr);
 	height: 100vh;
 	height: 100dvh;
 }
+
 
 .tabbar,
 .toolbar,
@@ -77,13 +78,14 @@
 	display: flex;
 	align-items: stretch;
 	gap: 4px;
-	padding: 0 8px;
+	/* Safe-area insets keep the strip clear of notches when the page is shown edge to edge. */
+	padding: env(safe-area-inset-top, 0px) calc(8px + env(safe-area-inset-right, 0px)) 0 calc(8px + env(safe-area-inset-left, 0px));
 	border-bottom: 1px solid var(--line);
 	min-width: 0;
 }
 
 .tabs {
-	flex: 1 1 auto;
+	flex: 0 1 auto;
 	display: flex;
 	align-items: stretch;
 	min-width: 0;
@@ -127,12 +129,12 @@
 	color: var(--text);
 }
 
-.tab[aria-selected="true"] {
+.tab.is-active {
 	color: var(--text);
 	font-weight: 500;
 }
 
-.tab[aria-selected="true"]::after {
+.tab.is-active::after {
 	content: "";
 	position: absolute;
 	left: 10px;
@@ -143,8 +145,8 @@
 	background: var(--accent-lit);
 }
 
-.tab[aria-selected="true"]::before,
-.tab[aria-selected="true"] + .tab::before {
+.tab.is-active::before,
+.tab.is-active + .tab::before {
 	opacity: 0;
 }
 
@@ -210,7 +212,7 @@
 }
 
 .tab:hover .tab-close,
-.tab[aria-selected="true"] .tab-close,
+.tab.is-active .tab-close,
 .tab-close:focus-visible {
 	opacity: 1;
 }
@@ -218,6 +220,13 @@
 .tab-close:hover {
 	background: var(--panel-3);
 	color: var(--text);
+}
+
+/* Touch screens have no hover: an invisible close button would close tabs on a tap meant to select them. */
+@media (hover: none) {
+	.tab:not(.is-active) .tab-close {
+		display: none;
+	}
 }
 
 .tab.closing {
@@ -243,7 +252,6 @@
 .tab-new {
 	flex: none;
 	align-self: center;
-	margin-left: 4px;
 	display: grid;
 	place-items: center;
 	width: 28px;
@@ -270,6 +278,7 @@
 	align-items: center;
 	gap: 7px;
 	height: 26px;
+	margin-left: auto;
 	padding: 0 10px;
 	border-radius: var(--r-pill);
 	color: var(--muted);
@@ -320,7 +329,7 @@
 	display: flex;
 	align-items: center;
 	gap: 8px;
-	padding: 0 12px;
+	padding: 0 calc(12px + env(safe-area-inset-right, 0px)) 0 calc(12px + env(safe-area-inset-left, 0px));
 	border-bottom: 1px solid var(--line);
 	min-width: 0;
 }
@@ -465,6 +474,15 @@
 	animation: progress 2.6s var(--ease) infinite;
 }
 
+@media (prefers-reduced-motion: reduce) {
+	.progress.is-active::before {
+		animation: none !important;
+		left: 0;
+		width: 100%;
+		opacity: 0.7;
+	}
+}
+
 @keyframes progress {
 	0% {
 		left: 0;
@@ -492,8 +510,8 @@
 	flex-direction: column;
 	align-items: center;
 	gap: 6px;
-	width: var(--rail-w);
-	padding: 12px 0;
+	width: calc(var(--rail-w) + env(safe-area-inset-left, 0px));
+	padding: 12px 0 12px env(safe-area-inset-left, 0px);
 	border-right: 1px solid var(--line);
 }
 
@@ -613,7 +631,9 @@
 	}
 
 	.shell {
-		grid-template-rows: var(--tabbar-h) var(--toolbar-h) 0 minmax(0, 1fr) var(--bottomnav-h);
+		grid-template-rows: calc(var(--tabbar-h) + env(safe-area-inset-top, 0px)) var(--toolbar-h) 0 minmax(0, 1fr) calc(
+				var(--bottomnav-h) + env(safe-area-inset-bottom, 0px)
+			);
 	}
 
 	.workspace {
@@ -629,8 +649,9 @@
 		flex-direction: row;
 		justify-content: space-around;
 		width: auto;
-		height: var(--bottomnav-h);
-		padding: 0 8px env(safe-area-inset-bottom);
+		height: calc(var(--bottomnav-h) + env(safe-area-inset-bottom, 0px));
+		padding: 0 calc(8px + env(safe-area-inset-right, 0px)) env(safe-area-inset-bottom, 0px) calc(8px + env(safe-area-inset-left, 0px));
+		box-sizing: border-box;
 		border-right: 0;
 		border-top: 1px solid var(--line);
 	}
@@ -670,7 +691,7 @@
 	}
 
 	.toolbar {
-		padding: 0 8px;
+		padding: 0 calc(8px + env(safe-area-inset-right, 0px)) 0 calc(8px + env(safe-area-inset-left, 0px));
 		gap: 4px;
 	}
 

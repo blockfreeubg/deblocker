@@ -7,6 +7,7 @@ describe("loadConfig", () => {
 	it("has safe defaults", () => {
 		const config = load({});
 		expect(config.port).toBe(8080);
+		expect(config.host).toBe("0.0.0.0");
 		expect(config.basePath).toBe("/");
 		expect(config.transport).toBe("libcurl");
 		expect(config.destinations).toEqual({ ports: [80, 443], allowPrivate: false, allowlist: [], blocklist: [] });
@@ -91,6 +92,12 @@ describe("loadConfig", () => {
 
 	it("enables dev mode from the CLI flag", () => {
 		expect(loadConfig({}, ["node", "index.ts", "--dev"]).dev).toBe(true);
+	});
+
+	it("listens only on loopback in dev mode or with private destinations, unless HOST is set", () => {
+		expect(loadConfig({}, ["--dev"]).host).toBe("127.0.0.1");
+		expect(load({ ALLOW_PRIVATE_DESTINATIONS: "true" }).host).toBe("127.0.0.1");
+		expect(load({ ALLOW_PRIVATE_DESTINATIONS: "true", HOST: "0.0.0.0" }).host).toBe("0.0.0.0");
 	});
 });
 

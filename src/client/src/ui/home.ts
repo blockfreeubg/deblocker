@@ -1,5 +1,6 @@
 import type { QuickLink } from "../../../shared/public-config.js";
 import { hostLabel } from "../../../shared/url.js";
+import { BASE_PATH } from "../lib/api.js";
 import { $, h, icon } from "../lib/dom.js";
 
 export interface HomeCallbacks {
@@ -83,7 +84,9 @@ export class HomeView {
 				"a",
 				{
 					class: "quicklink",
-					href: link.url,
+					// The address opens the link inside Deblocker too, so "open in new tab", dragging or
+					// long-pressing a tile never leaves the proxy.
+					href: `${BASE_PATH}?url=${encodeURIComponent(link.url)}`,
 					title: `${label} — ${link.url}`,
 					onclick: (event: Event) => {
 						const mouse = event as MouseEvent;

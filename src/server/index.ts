@@ -46,8 +46,10 @@ async function main() {
 	});
 
 	server.listen(config.port, config.host, () => {
-		const shownHost = config.host === "0.0.0.0" || config.host === "::" ? "localhost" : config.host;
+		const everywhere = config.host === "0.0.0.0" || config.host === "::";
+		const shownHost = everywhere ? "localhost" : config.host.includes(":") ? `[${config.host}]` : config.host;
 		logger.info(`Deblocker is running at http://${shownHost}:${config.port}${config.basePath}`);
+		logger.info(everywhere ? `Listening on ${config.host}:${config.port} (all network interfaces)` : `Listening on ${config.host}:${config.port} (this address only; set HOST to change)`);
 		logger.info(`Wisp endpoint: ${gateway.path} | transport: ${config.transport} | private destinations: ${config.destinations.allowPrivate ? "ALLOWED" : "blocked"}`);
 		if (config.access.key) logger.info("Access key protection is enabled");
 		if (config.destinations.allowPrivate) logger.warn("ALLOW_PRIVATE_DESTINATIONS is on: visitors can reach this machine's local network. Use only for development.");

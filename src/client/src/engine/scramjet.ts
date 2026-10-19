@@ -10,7 +10,7 @@
  * Every path is derived from the base path, so Deblocker works at "/" or under any sub-path.
  */
 import type { TransportName } from "../../../shared/public-config.js";
-import type { EngineStatus, FrameEvents, NavigationError, NavigationErrorKind, ProxyEngine, ProxyFrame } from "./types.js";
+import type { EngineStatus, FrameEvents, NavigationErrorKind, NavigationKind, ProxyEngine, ProxyFrame } from "./types.js";
 
 /* Minimal shapes of the runtime globals defined by the engine bundles. */
 interface ScramjetFrame {
@@ -100,14 +100,41 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
 	});
 }
 
-async function registerServiceWorker(base: string): Promise<ServiceWorker> {
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function activated(worker: ServiceWorker): Promise<void> {
+	if (worker.state === "activated") return Promise.resolve();
+	return new Promise((resolve) => {
+		const onChange = () => {
+			if (worker.state === "activated" || worker.state === "redundant") {
+				worker.removeEventListener("statechange", onChange);
+				resolve();
+			}
+		};
+		worker.addEventListener("statechange", onChange);
+	});
+}
+
+/**
+ * Registers sw.js and waits until the newest version is the active worker. After a deploy the old
+ * worker is replaced within moments (skipWaiting + clients.claim); handing the Controller the old,
+ * soon-redundant worker would leave the engine waiting forever.
+ */
+async function registerServiceWorker(base: string): Promise<ServiceWorkerRegistration> {
 	const registration = await navigator.serviceWorker.register(`${base}sw.js`, { scope: base, updateViaCache: "none" });
-	// Pick up a new sw.js after a Deblocker upgrade without requiring a second reload.
-	registration.update().catch(() => {});
-	if (registration.active) return registration.active;
-	const ready = await navigator.serviceWorker.ready;
-	if (!ready.active) throw new Error("The service worker didn't activate.");
-	return ready.active;
+	await Promise.race([registration.update().catch(() => {}), sleep(3000)]);
+	const pending = registration.installing ?? registration.waiting;
+	if (pending) await Promise.race([activated(pending), sleep(5000)]);
+	await navigator.serviceWorker.ready;
+	return registration;
+}
+
+function currentWorker(registration: ServiceWorkerRegistration): ServiceWorker | null {
+	const controller = navigator.serviceWorker.controller;
+	if (controller && controller.state !== "redundant") return controller;
+	return registration.active;
 }
 
 /**
@@ -157,12 +184,22 @@ function decodeFrameUrl(frame: ScramjetFrame, href: string): string | null {
 	}
 }
 
+interface FailureRecord {
+	kind: NavigationErrorKind;
+	detail: string;
+}
+
 class ScramjetProxyFrame implements ProxyFrame {
 	readonly iframe: HTMLIFrameElement;
 	private frame: ScramjetFrame | null = null;
 	private lastUrl: string | null = null;
 	private titleObserver: MutationObserver | null = null;
 	private destroyed = false;
+	/** The current document called location.replace(), so its successor replaces its history entry. */
+	private replacing = false;
+	private errored = false;
+	/** Top-level load failures recorded by the engine, keyed by real URL (pages can't forge these). */
+	private readonly failures = new Map<string, FailureRecord>();
 
 	constructor(
 		private readonly engine: ScramjetEngine,
@@ -188,11 +225,17 @@ class ScramjetProxyFrame implements ProxyFrame {
 		return this.lastUrl;
 	}
 
+	get showingError(): boolean {
+		return this.errored;
+	}
+
 	go(url: string): void {
 		if (this.destroyed) return;
 		// Forget the previous URL so the next commit is always reported, even if a redirect
 		// lands on the page that was already showing.
 		this.lastUrl = null;
+		this.errored = false;
+		this.replacing = false;
 		this.ensureFrame().go(url);
 	}
 
@@ -226,19 +269,31 @@ class ScramjetProxyFrame implements ProxyFrame {
 	private ensureFrame(): ScramjetFrame {
 		if (this.frame) return this.frame;
 		this.frame = this.engine.attach(this.iframe, {
-			urlChanged: (url) => this.setUrl(url),
-			documentReady: (win) => this.watchDocument(win),
+			documentCommitted: (url, kind, win) => {
+				const effective = this.replacing ? "replace" : kind;
+				this.replacing = false;
+				this.errored = false;
+				this.setUrl(url, effective);
+				this.watchDocument(win);
+			},
+			urlChanged: (url, kind) => this.setUrl(url, kind),
+			willReplace: () => (this.replacing = true),
+			requestFailed: (url, kind, detail) => {
+				if (this.failures.size > 20) this.failures.clear();
+				this.failures.set(url, { kind, detail });
+			},
+			navigationEnded: () => this.events.loadFinished(),
 		});
 		return this.frame;
 	}
 
-	private setUrl(url: string) {
+	private setUrl(url: string, kind: NavigationKind) {
 		if (url === this.lastUrl) return;
 		this.lastUrl = url;
-		this.events.urlChanged(url);
+		this.events.urlChanged(url, kind);
 	}
 
-	/** Called by the engine for every new top-level document Scramjet initialises in this frame. */
+	/** Called for every new top-level document Scramjet initialises in this frame. */
 	private watchDocument(win: Window) {
 		this.titleObserver?.disconnect();
 		const readTitle = () => {
@@ -258,7 +313,8 @@ class ScramjetProxyFrame implements ProxyFrame {
 		if (win.document.readyState === "loading") win.document.addEventListener("DOMContentLoaded", observe, { once: true });
 		else observe();
 		win.addEventListener("beforeunload", () => this.events.loadStarted());
-		// Forward Deblocker's keyboard shortcuts while the page has focus.
+		// Forward Deblocker's keyboard shortcuts while the page has focus (the handler ignores keys
+		// that edit text, so typing in the page is never affected).
 		win.addEventListener(
 			"keydown",
 			(event) => {
@@ -277,20 +333,23 @@ class ScramjetProxyFrame implements ProxyFrame {
 		} catch {
 			doc = null;
 		}
-		const marker = doc?.documentElement?.getAttribute(`data-${ERROR_MARKER}`);
-		if (doc && marker) {
-			const url = doc.documentElement.getAttribute("data-url") ?? this.lastUrl ?? "";
-			const error: NavigationError = {
-				kind: marker as NavigationErrorKind,
-				url,
-				detail: doc.documentElement.getAttribute("data-detail") ?? "",
-			};
-			if (url) this.setUrl(url);
-			this.events.failed(error);
+		const url = this.currentUrl;
+		const record = url ? this.failures.get(url) : undefined;
+		// Only documents the engine itself produced for a failed load count as errors; a page that merely
+		// carries the marker attribute is treated like any other page.
+		if (url && record && doc?.documentElement?.hasAttribute(`data-${ERROR_MARKER}`)) {
+			this.failures.delete(url);
+			this.errored = true;
+			const kind = this.replacing ? "replace" : "push";
+			this.replacing = false;
+			this.setUrl(url, kind);
+			this.events.titleChanged("");
+			this.events.faviconChanged(null);
+			this.events.failed({ url, kind: record.kind, detail: record.detail });
 			return;
 		}
-		const decoded = this.currentUrl;
-		if (decoded) this.setUrl(decoded);
+		this.errored = false;
+		if (url) this.setUrl(url, "push");
 		if (doc) {
 			this.events.titleChanged(doc.title ?? "");
 			this.events.faviconChanged(this.faviconFor(doc));
@@ -320,8 +379,52 @@ class ScramjetProxyFrame implements ProxyFrame {
 }
 
 interface AttachCallbacks {
-	urlChanged(url: string): void;
-	documentReady(win: Window): void;
+	/** A new top-level document was initialised. */
+	documentCommitted(url: string, kind: NavigationKind, win: Window): void;
+	/** Same-document URL change (pushState, replaceState, hash, back/forward within the page). */
+	urlChanged(url: string, kind: NavigationKind): void;
+	/** The page called location.replace(). */
+	willReplace(): void;
+	/** A top-level navigation failed in the engine; an error document is about to load. */
+	requestFailed(url: string, kind: NavigationErrorKind, detail: string): void;
+	/** A top-level navigation ended without a new document (download, 204). */
+	navigationEnded(): void;
+}
+
+type SocketLike = { close(code?: number, reason?: string): void; addEventListener(type: string, listener: () => void): void };
+
+/** Maps form targets that would leave the tab (_top, _parent) onto the frames Scramjet uses for them. */
+function installFormTargets(client: any, win: Window) {
+	const mapTarget = (target: string | null | undefined): string | null => {
+		const value = (target ?? "").trim().toLowerCase();
+		if (value === "_top" || value === "_unfencedtop") return client.meta?.topFrameName ?? "_self";
+		if (value === "_parent") return client.meta?.parentFrameName ?? "_self";
+		return null;
+	};
+	const fix = (form: HTMLFormElement, submitter?: Element | null) => {
+		const override = submitter?.getAttribute("formtarget");
+		if (submitter && override !== null && override !== undefined) {
+			const mapped = mapTarget(override);
+			if (mapped) submitter.setAttribute("formtarget", mapped);
+			return;
+		}
+		const mapped = mapTarget(form.getAttribute("target") ?? win.document.querySelector("base[target]")?.getAttribute("target"));
+		if (mapped) form.setAttribute("target", mapped);
+	};
+	win.addEventListener(
+		"submit",
+		(event) => {
+			const form = event.target as HTMLFormElement | null;
+			if (form && form.tagName === "FORM") fix(form, (event as SubmitEvent).submitter);
+		},
+		{ capture: true },
+	);
+	// form.submit() fires no submit event.
+	client.Proxy(["HTMLFormElement.prototype.submit"], {
+		apply(call: { this: HTMLFormElement }) {
+			if (call.this) fix(call.this);
+		},
+	});
 }
 
 class ScramjetEngine implements ProxyEngine {
@@ -360,7 +463,7 @@ class ScramjetEngine implements ProxyEngine {
 			throw new Error("This browser doesn't allow service workers here (private browsing modes often disable them).");
 		}
 		const base = this.options.base;
-		const worker = await withTimeout(registerServiceWorker(base), START_TIMEOUT_MS, "The service worker took too long to start.");
+		const registration = await withTimeout(registerServiceWorker(base), START_TIMEOUT_MS, "The service worker took too long to start.");
 
 		await loadScript(`${base}engine/scramjet.js`);
 		await loadScript(`${base}engine/controller.api.js`);
@@ -369,6 +472,8 @@ class ScramjetEngine implements ProxyEngine {
 		const transport = this.createTransport();
 		const api = window.$scramjetController;
 		if (!api) throw new Error("Scramjet Controller failed to load.");
+		const worker = currentWorker(registration);
+		if (!worker) throw new Error("The service worker didn't activate.");
 		this.controller = new api.Controller({
 			serviceworker: worker,
 			transport,
@@ -384,21 +489,32 @@ class ScramjetEngine implements ProxyEngine {
 				flags: { allowFailedIntercepts: true, sourcemaps: false, captureErrors: false, rewriterLogs: false },
 			},
 		});
-		await withTimeout(this.controller.wait(), START_TIMEOUT_MS, "Scramjet took too long to start. Try reloading the page.");
-
 		const controller = this.controller as ScramjetController & Record<string, any>;
-		// The controller ignores the service worker's "revive" message for 5 s after start-up. That guard
-		// only protects against the worker's own first boot, and would leave Deblocker broken if the worker
-		// restarts in that window, so turn it off.
-		controller.guardServiceWorkerRevive = false;
-		// After a service worker update the controller would keep talking to the old, redundant worker.
+		// Each service worker restart makes the page re-register its port. Both sw.js and controller.sw.js
+		// announce a restart, so ignore repeat announcements for a moment: a second re-registration
+		// would orphan requests already in flight on the first port.
+		const setupPort = controller.setupMessagePort.bind(controller) as () => void;
+		let guardTimer: number | undefined;
+		controller.setupMessagePort = () => {
+			controller.guardServiceWorkerRevive = true;
+			window.clearTimeout(guardTimer);
+			guardTimer = window.setTimeout(() => (controller.guardServiceWorkerRevive = false), 1500);
+			setupPort();
+		};
+		// After a service worker update, talk to the new worker (also needed if it activates during start-up).
 		navigator.serviceWorker.addEventListener("controllerchange", () => {
 			const active = navigator.serviceWorker.controller;
 			if (active && active !== controller.serviceWorkerController) {
 				controller.serviceWorkerController = active;
-				controller.setupMessagePort?.();
+				controller.setupMessagePort();
 			}
 		});
+
+		await withTimeout(this.controller.wait(), START_TIMEOUT_MS, "Scramjet took too long to start. Try reloading the page.");
+		// The controller ignores restart announcements for 5 s after start-up, which would leave Deblocker
+		// broken if the worker restarted in that window. The guard above handles duplicates instead.
+		window.clearTimeout(guardTimer);
+		controller.guardServiceWorkerRevive = false;
 	}
 
 	private createTransport(): unknown {
@@ -445,26 +561,82 @@ class ScramjetEngine implements ProxyEngine {
 
 		plugin.tap(frame.hooks.init.post, (context: { isTopLevel: boolean; window: Window; client: any }) => {
 			try {
+				const { client, window: win } = context;
+				let replacingState = false;
 				// Published Scramjet 2.0.67-alpha.2 turns history.pushState(state, title) without a URL into
 				// ".../undefined" (fixed upstream on main). Fill in the current URL, as browsers do.
-				context.client.Proxy(["History.prototype.pushState", "History.prototype.replaceState"], {
+				const fillUrl = (call: { args: unknown[] }) => {
+					if (call.args[2] === undefined || call.args[2] === null) call.args[2] = client.url.href;
+				};
+				client.Proxy(["History.prototype.pushState"], { apply: fillUrl });
+				client.Proxy(["History.prototype.replaceState"], {
 					apply(call: { args: unknown[] }) {
-						if (call.args[2] === undefined || call.args[2] === null) call.args[2] = context.client.url.href;
+						fillUrl(call);
+						replacingState = true;
 					},
 				});
+
+				// WebSockets opened by the page live in the Deblocker page's transport, which never learns
+				// that the document went away; close them when it does, so Wisp streams aren't leaked.
+				const bare = client.bare;
+				if (bare && typeof bare.createWebSocket === "function") {
+					const sockets = new Set<SocketLike>();
+					const create = bare.createWebSocket.bind(bare) as (...args: unknown[]) => SocketLike;
+					bare.createWebSocket = (...args: unknown[]) => {
+						const socket = create(...args);
+						sockets.add(socket);
+						socket.addEventListener("close", () => sockets.delete(socket));
+						return socket;
+					};
+					win.addEventListener("pagehide", () => {
+						for (const socket of sockets) {
+							try {
+								socket.close(1001, "");
+							} catch {
+								// still connecting
+							}
+						}
+						sockets.clear();
+					});
+				}
+
+				installFormTargets(client, win);
+
 				if (!context.isTopLevel) return;
-				const current = () => context.client.url.href as string;
-				callbacks.urlChanged(current());
-				callbacks.documentReady(context.window);
+				const current = () => client.url.href as string;
+				const navigation = win.performance?.getEntriesByType?.("navigation")[0] as PerformanceNavigationTiming | undefined;
+				const kind: NavigationKind = navigation?.type === "back_forward" ? "traverse" : navigation?.type === "reload" ? "replace" : "push";
+				callbacks.documentCommitted(current(), kind, win);
+
+				const locationProxy = client.locationProxy;
+				if (locationProxy && typeof locationProxy.replace === "function") {
+					locationProxy.replace = new Proxy(locationProxy.replace, {
+						apply(target, that, args) {
+							callbacks.willReplace();
+							return Reflect.apply(target, that, args);
+						},
+					});
+				}
 				// "location" events carry a relative or stale URL and are followed by a new document anyway.
-				plugin.tap(context.client.hooks.lifecycle.navigate, (navigation: { type?: string }) => {
-					if (navigation?.type !== "location") callbacks.urlChanged(current());
+				plugin.tap(client.hooks.lifecycle.navigate, (event: { type?: string }) => {
+					if (event?.type === "location") return;
+					const change: NavigationKind = event?.type === "history" && replacingState ? "replace" : "push";
+					replacingState = false;
+					callbacks.urlChanged(current(), change);
 				});
-				context.window.addEventListener("hashchange", () => callbacks.urlChanged(current()), { capture: true });
-				context.window.addEventListener("popstate", () => callbacks.urlChanged(current()), { capture: true });
+				win.addEventListener("popstate", () => callbacks.urlChanged(current(), "traverse"), { capture: true });
+				win.addEventListener("hashchange", () => callbacks.urlChanged(current(), "push"), { capture: true });
 			} catch (error) {
 				console.warn("Deblocker: couldn't attach to a proxied document", error);
 			}
+		});
+
+		// Navigations that end without a document (downloads, 204 No Content) never fire "load".
+		plugin.tap(frame.hooks.fetch.preresponse, (context: { parsed: { destination: string; isIframe?: boolean } }, props: { response: { status: number; rawHeaders: Array<[string, string]> } }) => {
+			if (context.parsed.destination !== "iframe" || context.parsed.isIframe) return;
+			const { status, rawHeaders } = props.response;
+			const disposition = rawHeaders.find(([name]) => /^content-disposition$/i.test(name))?.[1] ?? "";
+			if (status === 204 || status === 205 || /^\s*attachment/i.test(disposition)) callbacks.navigationEnded();
 		});
 
 		// Failed page loads get an error document; ScramjetProxyFrame shows Deblocker's error card for it.
@@ -473,6 +645,13 @@ class ScramjetEngine implements ProxyEngine {
 			if (destination !== "document" && destination !== "iframe") return;
 			const { kind, detail } = classifyError(context.error);
 			const url = decodeFrameUrl(frame, context.rawrequest.rawUrl) ?? context.rawrequest.rawUrl;
+			let nested = false;
+			try {
+				nested = new URL(context.rawrequest.rawUrl).searchParams.has("$iframe");
+			} catch {
+				// ignore
+			}
+			if (!nested) callbacks.requestFailed(url, kind, detail);
 			props.suppressError = true;
 			props.setResponse = {
 				status: 502,
@@ -564,6 +743,17 @@ class ScramjetEngine implements ProxyEngine {
 			);
 		} catch {
 			problems.push("IndexedDB");
+		}
+		try {
+			// Scramjet keeps proxied sites' file system storage (OPFS) in per-site folders of this origin's root.
+			if (navigator.storage && typeof navigator.storage.getDirectory === "function") {
+				const root = await navigator.storage.getDirectory();
+				const names: string[] = [];
+				for await (const name of (root as unknown as { keys(): AsyncIterable<string> }).keys()) names.push(name);
+				for (const name of names) await root.removeEntry(name, { recursive: true });
+			}
+		} catch {
+			problems.push("file storage");
 		}
 		if (problems.length) throw new Error(`Some data couldn't be removed: ${problems.join(", ")}.`);
 	}

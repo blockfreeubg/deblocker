@@ -47,11 +47,10 @@
 
 		<div class="shell" id="shell">
 			<header class="tabbar">
-				<div class="tabs" id="tabs" role="tablist" aria-label="Tabs">
-					<button class="tab-new" id="newTab" type="button" title="New tab (Alt+T)" aria-label="New tab">
-						<svg class="icon"><use href="#i-plus" /></svg>
-					</button>
-				</div>
+				<div class="tabs" id="tabs" role="group" aria-label="Tabs"></div>
+				<button class="tab-new" id="newTab" type="button" title="New tab (Alt+T)" aria-label="New tab">
+					<svg class="icon"><use href="#i-plus" /></svg>
+				</button>
 				<button class="status-chip" id="statusChip" type="button" data-state="checking" title="Proxy backend status">
 					<span class="status-dot"></span>
 					<span class="status-text" id="statusText">connecting…</span>

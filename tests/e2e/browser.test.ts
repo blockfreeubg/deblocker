@@ -38,7 +38,7 @@ async function activeFrame(page: Page): Promise<Frame> {
 async function openApp(context: BrowserContext, app: RunningApp): Promise<Page> {
 	const page = await context.newPage();
 	const errors: string[] = [];
-	page.on("pageerror", (error) => errors.push(error.message));
+	page.on("pageerror", (error) => errors.push(`[${expect.getState().currentTestName}] ${error.stack || error.message}`));
 	(page as Page & { errors?: string[] }).errors = errors;
 	await page.goto(app.url);
 	await page.waitForSelector("#statusChip[data-state=online]", { timeout: 20_000 });
@@ -97,7 +97,7 @@ suite("browsing through Scramjet", () => {
 		expect(await frame.textContent("#heading")).toBe("Target home");
 		await expect.poll(() => frame.textContent("#fetched")).toBe("fetched through the proxy");
 		await expect.poll(() => omnibox(page)).toBe(`${target.origin}/`);
-		await expect.poll(() => page.textContent(".tab[aria-selected=true] .tab-title")).toBe("Target Home");
+		await expect.poll(() => page.textContent(".tab.is-active .tab-title")).toBe("Target Home");
 		expect(await page.getAttribute("#omniboxIcon", "data-kind")).toBe("insecure");
 		expect(await page.isHidden("#loader")).toBe(true);
 	});
@@ -145,7 +145,7 @@ suite("browsing through Scramjet", () => {
 		const frame = await activeFrame(page);
 		await frame.click("#push");
 		await expect.poll(() => omnibox(page)).toBe(`${target.origin}/two/pushed`);
-		await expect.poll(() => page.textContent(".tab[aria-selected=true] .tab-title")).toBe("Pushed State");
+		await expect.poll(() => page.textContent(".tab.is-active .tab-title")).toBe("Pushed State");
 	});
 
 	it("submits forms with their request body", async () => {
@@ -218,6 +218,84 @@ suite("browsing through Scramjet", () => {
 		await popup.close();
 	});
 
+	it("opens window.open() popups as a Deblocker window with just that page", async () => {
+		await go(page, `${target.origin}/`);
+		const frame = await activeFrame(page);
+		await frame.waitForSelector("#open-popup");
+		const [popup] = await Promise.all([context.waitForEvent("page"), frame.click("#open-popup")]);
+		await popup.waitForLoadState();
+		await popup.waitForSelector("#statusChip[data-state=online]", { timeout: 20_000 });
+		await expect.poll(() => popup.inputValue("#omniboxInput")).toBe(`${target.origin}/two`);
+		const popupFrame = await activeFrame(popup);
+		await popupFrame.waitForSelector("text=Page two");
+		// The popup inherits the opener's sessionStorage, but must not duplicate its tabs.
+		expect(await popup.locator(".tab").count()).toBe(1);
+		await popup.close();
+	});
+
+	it("keeps forms that target the top window inside the tab", async () => {
+		await go(page, `${target.origin}/`);
+		const frame = await activeFrame(page);
+		await frame.waitForSelector("#top-submit");
+		await page.evaluate(() => ((window as unknown as { shellMarker: number }).shellMarker = 7));
+		const tabs = await page.locator(".tab").count();
+		await frame.click("#top-submit");
+		await expect.poll(() => omnibox(page)).toBe(`${target.origin}/search?q=from+form`);
+		const results = await activeFrame(page);
+		await expect.poll(() => results.textContent("#query").catch(() => "")).toBe("from form");
+		// The Deblocker interface itself was not navigated or reloaded.
+		expect(await page.evaluate(() => (window as unknown as { shellMarker?: number }).shellMarker)).toBe(7);
+		expect(await page.locator(".tab").count()).toBe(tabs);
+	});
+
+	it("closes a page's WebSockets when the page goes away", async () => {
+		await go(page, `${target.origin}/ws`);
+		const frame = await activeFrame(page);
+		await expect.poll(() => frame.textContent("#ws").catch(() => ""), { timeout: 15_000 }).toBe("echo:hi");
+		expect(target.openSockets()).toBe(1);
+		await go(page, `${target.origin}/two`);
+		await expect.poll(() => target.openSockets(), { timeout: 10_000 }).toBe(0);
+	});
+
+	it("leaves keys that edit text alone, and only swallows shortcuts it acts on", async () => {
+		type Key = { key: string; code: string; altKey?: boolean; shiftKey?: boolean };
+		const prevented = (selector: string | null, init: Key): Promise<boolean> =>
+			page.evaluate(
+				(args: { selector: string | null; init: Key }) => {
+					const target = args.selector ? document.querySelector(args.selector)! : document.body;
+					const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...args.init });
+					target.dispatchEvent(event);
+					return event.defaultPrevented;
+				},
+				{ selector, init },
+			);
+		const tabs = await page.locator(".tab").count();
+		// Alt/Option+arrows move by word in text fields; with Shift they select.
+		expect(await prevented("#omniboxInput", { key: "ArrowLeft", code: "ArrowLeft", altKey: true })).toBe(false);
+		expect(await prevented(null, { key: "ArrowLeft", code: "ArrowLeft", altKey: true, shiftKey: true })).toBe(false);
+		// A layout where the W key types "z" (AZERTY): Alt+Z must not close the tab.
+		expect(await prevented(null, { key: "z", code: "KeyW", altKey: true })).toBe(false);
+		// Alt+9 with fewer than nine tabs does nothing, so the key isn't taken.
+		expect(await prevented(null, { key: "9", code: "Digit9", altKey: true })).toBe(false);
+		expect(await page.locator(".tab").count()).toBe(tabs);
+		// Alt+1 acts, so it is taken.
+		expect(await prevented(null, { key: "1", code: "Digit1", altKey: true })).toBe(true);
+	});
+
+	it("keeps keyboard focus on settings controls while changing them", async () => {
+		await page.click('.rail-btn[data-nav="settings"]');
+		await page.click('.settings-nav-btn:has-text("appearance")');
+		expect(await page.evaluate(() => document.activeElement?.textContent)).toContain("appearance");
+		const toggle = page.locator('[aria-label="Show background art"]');
+		const before = await toggle.getAttribute("aria-checked");
+		await toggle.focus();
+		await page.keyboard.press("Space");
+		await expect.poll(() => toggle.getAttribute("aria-checked")).not.toBe(before);
+		await page.keyboard.press("Space");
+		await expect.poll(() => toggle.getAttribute("aria-checked")).toBe(before);
+		expect(await page.evaluate(() => document.activeElement?.getAttribute("aria-label"))).toBe("Show background art");
+	});
+
 	it("remembers settings and open tabs across reloads", async () => {
 		await page.click('.rail-btn[data-nav="settings"]');
 		await page.click('.settings-nav-btn:has-text("appearance")');
@@ -245,6 +323,8 @@ suite("browsing through Scramjet", () => {
 		await go(page, `${target.origin}/`);
 		let frame = await activeFrame(page);
 		await frame.waitForSelector("#to-two");
+		// Only stop it once it is idle: a worker stopped mid-request fails that request, as in any browser.
+		await expect.poll(() => frame.textContent("#fetched").catch(() => "")).toBe("fetched through the proxy");
 		const cdp = await context.newCDPSession(page);
 		await cdp.send("ServiceWorker.enable");
 		await cdp.send("ServiceWorker.stopAllWorkers");
@@ -268,7 +348,9 @@ suite("browsing through Scramjet", () => {
 	});
 
 	it("handles Deblocker shortcuts while a proxied page has focus", async () => {
-		await go(page, `${target.origin}/two`);
+		// A fresh address, and wait for it to finish loading, so the keys go to the new document.
+		await go(page, `${target.origin}/two?keys`);
+		await page.waitForSelector("#reloadBtn:not(.is-loading)");
 		const frame = await activeFrame(page);
 		await frame.waitForSelector("#push");
 		await frame.focus("input[name=message]");
@@ -307,6 +389,37 @@ suite("browsing through Scramjet", () => {
 
 	it("did not throw uncaught errors in the Deblocker page", () => {
 		expect((page as Page & { errors?: string[] }).errors ?? []).toEqual([]);
+	});
+});
+
+suite("browser back button", () => {
+	let app: RunningApp;
+	let context: BrowserContext;
+
+	beforeAll(async () => {
+		app = await startApp({ ALLOW_PRIVATE_DESTINATIONS: "true", ALLOWED_PORTS: "*" });
+		context = await browser.newContext();
+	});
+
+	afterAll(async () => {
+		await context?.close();
+		await app?.stop();
+	});
+
+	it("goes back in the current tab instead of leaving Deblocker", async () => {
+		const page = await openApp(context, app);
+		await page.click("#omniboxInput");
+		await go(page, `${target.origin}/two`);
+		const frame = await activeFrame(page);
+		await frame.waitForSelector("text=Page two");
+		await expect.poll(() => page.evaluate(() => (history.state as { dbk?: string } | null)?.dbk)).toBe("top");
+
+		await page.evaluate(() => history.back());
+		await page.waitForSelector("#view-home", { state: "visible" });
+		expect(page.url()).toBe(app.url);
+		await expect.poll(() => page.evaluate(() => (history.state as { dbk?: string } | null)?.dbk)).toBe("top");
+		await page.click("#forwardBtn");
+		await expect.poll(() => omnibox(page)).toBe(`${target.origin}/two`);
 	});
 });
 
@@ -412,5 +525,24 @@ suite("access key", () => {
 		await go(page, `${target.origin}/`);
 		const frame = await activeFrame(page);
 		await frame.waitForSelector("#heading");
+	});
+
+	it("asks for the key again when the session ends, then returns to the page", async () => {
+		const page = context.pages()[0]!;
+		// Without SESSION_SECRET, a restart invalidates every session.
+		const port = new URL(app.url).port;
+		await app.stop();
+		app = await startApp({ ACCESS_KEY: "letmein-please", ALLOW_PRIVATE_DESTINATIONS: "true", ALLOWED_PORTS: "*", PORT: port });
+
+		await go(page, `${target.origin}/two`);
+		await page.waitForSelector('#pageError:not([hidden]):has-text("Access key needed")', { timeout: 20_000 });
+		expect(await page.textContent("#statusText")).toBe("locked");
+		await page.click('#pageError button:has-text("enter access key")');
+		await page.waitForSelector("#unlockForm:not([hidden])");
+		await page.fill("#unlockInput", "letmein-please");
+		await page.click('#unlockForm button[type="submit"]');
+		await expect.poll(() => omnibox(page)).toBe(`${target.origin}/two`);
+		const frame = await activeFrame(page);
+		await frame.waitForSelector("text=Page two");
 	});
 });

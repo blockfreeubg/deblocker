@@ -20,7 +20,7 @@ export interface Settings {
 	quickLinks: QuickLink[] | null;
 }
 
-const SETTINGS_KEY = "deblocker:settings";
+export const SETTINGS_KEY = "deblocker:settings";
 const SESSION_KEY = "deblocker:session";
 
 const DEFAULTS: Settings = { theme: "glacier", backdrop: true, searchEngine: null, quickLinks: null };

@@ -177,6 +177,17 @@ describe("Wisp gateway with private destinations enabled (development)", () => {
 		expect(await wispStream(result.socket, "localhost", target.port)).toMatchObject({ kind: "closed", reason: HOST_BLOCKED });
 		result.socket.close();
 	});
+
+	it("refuses DNS-rebound hostnames, which would otherwise pass the Origin check", async () => {
+		const port = new URL(server.origin).port;
+		const rebound = `attacker.example:${port}`;
+		expect(await openWebSocket(server.wispUrl, { host: rebound, origin: `http://${rebound}` })).toEqual({ opened: false, status: 403 });
+		for (const host of [`localhost:${port}`, `[::1]:${port}`, `127.0.0.1:${port}`]) {
+			const result = await openWebSocket(server.wispUrl, { host, origin: `http://${host}` });
+			expect(result.opened, host).toBe(true);
+			if (result.opened) result.socket.close();
+		}
+	});
 });
 
 describe("sub-path deployment", () => {

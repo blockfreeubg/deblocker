@@ -5,7 +5,7 @@ import { logging as wispLogging, server as wispServer } from "@mercuryworkshop/w
 import { WebSocketServer, type WebSocket } from "ws";
 import type { AccessControl } from "./access.js";
 import type { ServerConfig } from "./config.js";
-import { clientIp, compileTrust, isAllowedOrigin, rejectUpgrade } from "./http-utils.js";
+import { clientIp, compileTrust, isAllowedOrigin, isRebindingSafeHost, rejectUpgrade } from "./http-utils.js";
 import type { Logger } from "./logger.js";
 import { isValidHostname, type DestinationPolicy } from "./policy.js";
 import { clientKey } from "../shared/net.js";
@@ -166,6 +166,11 @@ export class WispGateway {
 		if (!isAllowedOrigin(request, config.allowedOrigins, config.trustProxy !== false)) {
 			logger.warn(`wisp: rejected connection from ${ip} with origin ${request.headers.origin ?? "(none)"}`);
 			rejectUpgrade(socket, 403, "Origin not allowed");
+			return true;
+		}
+		if (config.destinations.allowPrivate && !isRebindingSafeHost(request, config.allowedOrigins)) {
+			logger.warn(`wisp: rejected connection from ${ip} for host ${request.headers.host ?? "(none)"} (private destinations are on; add it to ALLOWED_ORIGINS)`);
+			rejectUpgrade(socket, 403, "Host not allowed");
 			return true;
 		}
 		if (!access.isAuthenticated(request.headers.cookie)) {

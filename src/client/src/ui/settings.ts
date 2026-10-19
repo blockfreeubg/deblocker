@@ -28,6 +28,18 @@ function row(badge: string, label: string, sub: string, control: Node, wrap = fa
 	);
 }
 
+/** Focuses the first enabled control tagged with one of the given data-focus keys. */
+function focusKey(root: ParentNode, ...keys: string[]): boolean {
+	for (const key of keys) {
+		const element = root.querySelector<HTMLElement>(`[data-focus="${CSS.escape(key)}"]`);
+		if (element && !(element as HTMLButtonElement).disabled) {
+			element.focus();
+			return true;
+		}
+	}
+	return false;
+}
+
 function validTemplate(value: string): boolean {
 	if (!value.includes("%s")) return false;
 	try {
@@ -41,6 +53,8 @@ function validTemplate(value: string): boolean {
 export class SettingsView {
 	private readonly root = $("view-settings");
 	private section: SettingsSection = "search";
+	private nav: HTMLElement | null = null;
+	private body: HTMLElement | null = null;
 
 	constructor(
 		private readonly callbacks: SettingsCallbacks,
@@ -51,31 +65,36 @@ export class SettingsView {
 	) {}
 
 	show(section?: SettingsSection) {
+		const changed = section !== undefined && section !== this.section;
 		if (section) this.section = section;
 		this.render();
+		// On phones the nav is a scrolling row; keep the chosen section visible in it.
+		if (changed) this.nav?.querySelector('[aria-current="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
 	}
 
+	/**
+	 * Redraws the current section. The nav is built once and only updated, so the button that was
+	 * pressed keeps focus and the nav keeps its scroll position; focus inside the section is restored.
+	 */
 	render() {
-		const nav = h(
-			"nav",
-			{ class: "settings-nav", "aria-label": "Settings sections" },
-			h("h2", { class: "settings-nav-title" }, "settings"),
-			...SECTIONS.map((item) =>
-				h(
-					"button",
-					{
-						class: "settings-nav-btn",
-						type: "button",
-						"aria-current": item.id === this.section ? "true" : "false",
-						onclick: () => this.show(item.id),
-					},
-					icon(item.icon),
-					item.label,
+		if (!this.nav || !this.body) {
+			this.nav = h(
+				"nav",
+				{ class: "settings-nav", "aria-label": "Settings sections" },
+				h("h2", { class: "settings-nav-title" }, "settings"),
+				...SECTIONS.map((item) =>
+					h("button", { class: "settings-nav-btn", type: "button", "data-section": item.id, onclick: () => this.show(item.id) }, icon(item.icon), item.label),
 				),
-			),
-		);
-		const body = h("div", { class: "settings-body" }, this.renderSection());
-		this.root.replaceChildren(h("div", { class: "settings" }, nav, body));
+			);
+			this.body = h("div", { class: "settings-body" });
+			this.root.replaceChildren(h("div", { class: "settings" }, this.nav, this.body));
+		}
+		for (const button of this.nav.querySelectorAll<HTMLElement>("[data-section]")) {
+			button.setAttribute("aria-current", String(button.dataset.section === this.section));
+		}
+		const focused = document.activeElement instanceof HTMLElement && this.body.contains(document.activeElement) ? document.activeElement.dataset.focus : undefined;
+		this.body.replaceChildren(this.renderSection());
+		if (focused) focusKey(this.body, focused);
 	}
 
 	private renderSection(): HTMLElement {
@@ -105,7 +124,7 @@ export class SettingsView {
 
 		const select = h(
 			"select",
-			{ class: "field", "aria-label": "Search engine" },
+			{ class: "field", "aria-label": "Search engine", "data-focus": "engine" },
 			...SEARCH_ENGINES.map((engine) => h("option", { value: engine.template, selected: engine.template === current }, engine.name)),
 			h("option", { value: "custom", selected: !preset }, "Custom…"),
 		);
@@ -115,6 +134,7 @@ export class SettingsView {
 			placeholder: "https://search.example/?q=%s",
 			value: preset ? "" : current,
 			"aria-label": "Custom search URL",
+			"data-focus": "custom-engine",
 			spellcheck: "false",
 		});
 		const error = h("p", { class: "form-error", hidden: true }, "Enter an http(s) address that contains %s where the search terms go.");
@@ -151,36 +171,46 @@ export class SettingsView {
 
 	private appearanceSection(): HTMLElement {
 		const settings = this.getSettings();
-		const swatches = h(
-			"div",
-			{ class: "swatches", role: "radiogroup", "aria-label": "Colour theme" },
-			...THEMES.map((theme) =>
-				h(
-					"button",
-					{
-						class: "swatch",
-						type: "button",
-						role: "radio",
-						"aria-checked": String(theme.id === settings.theme),
-						onclick: () => {
-							this.callbacks.change({ theme: theme.id as ThemeId });
-							this.render();
-						},
-					},
-					h("span", { class: "swatch-dot", style: `background: linear-gradient(135deg, ${theme.swatch[0]} 50%, ${theme.swatch[1]} 50%)` }),
-					theme.name.toLowerCase(),
-				),
+		const buttons = THEMES.map((theme) =>
+			h(
+				"button",
+				{ class: "swatch", type: "button", role: "radio", "data-focus": `theme:${theme.id}`, onclick: () => pick(theme.id) },
+				h("span", { class: "swatch-dot", style: `background: linear-gradient(135deg, ${theme.swatch[0]} 50%, ${theme.swatch[1]} 50%)` }),
+				theme.name.toLowerCase(),
 			),
 		);
+		// A radio group: one tab stop, arrow keys move the selection.
+		const mark = (selected: ThemeId) =>
+			buttons.forEach((button, index) => {
+				const checked = THEMES[index]!.id === selected;
+				button.setAttribute("aria-checked", String(checked));
+				button.tabIndex = checked ? 0 : -1;
+			});
+		const pick = (id: ThemeId) => {
+			this.callbacks.change({ theme: id });
+			mark(id);
+		};
+		mark(settings.theme);
+		const swatches = h("div", { class: "swatches", role: "radiogroup", "aria-label": "Colour theme" }, ...buttons);
+		swatches.addEventListener("keydown", (event) => {
+			const delta = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
+			if (!delta) return;
+			event.preventDefault();
+			const current = THEMES.findIndex((theme) => theme.id === this.getSettings().theme);
+			const next = (current + delta + THEMES.length) % THEMES.length;
+			pick(THEMES[next]!.id);
+			buttons[next]!.focus();
+		});
 		const backdrop = h("button", {
 			class: "switch",
 			type: "button",
 			role: "switch",
 			"aria-checked": String(settings.backdrop),
 			"aria-label": "Show background art",
+			"data-focus": "backdrop",
 			onclick: () => {
 				this.callbacks.change({ backdrop: !this.getSettings().backdrop });
-				this.render();
+				backdrop.setAttribute("aria-checked", String(this.getSettings().backdrop));
 			},
 		});
 		return this.sectionShell(
@@ -199,15 +229,31 @@ export class SettingsView {
 			this.callbacks.change({ quickLinks: next });
 		};
 
-		const draw = () => {
+		/** Rebuilds the list, then moves focus to the first of `focus` that still exists. */
+		const draw = (...focus: string[]) => {
 			if (links.length === 0) {
 				list.replaceChildren(h("p", { class: "empty-note" }, "No quick links yet. Add one below."));
+				if (focus.length) focusKey(section, ...focus);
 				return;
 			}
 			list.replaceChildren(
 				...links.map((link, index) => {
-					const title = h("input", { class: "field", value: link.title, maxlength: 40, "aria-label": `Title of link ${index + 1}`, placeholder: "title" });
-					const url = h("input", { class: "field link-url", value: link.url, "aria-label": `Address of link ${index + 1}`, placeholder: "example.com", spellcheck: "false" });
+					const title = h("input", {
+						class: "field",
+						value: link.title,
+						maxlength: 40,
+						"aria-label": `Title of link ${index + 1}`,
+						placeholder: "title",
+						"data-focus": `link:${index}:title`,
+					});
+					const url = h("input", {
+						class: "field link-url",
+						value: link.url,
+						"aria-label": `Address of link ${index + 1}`,
+						placeholder: "example.com",
+						spellcheck: "false",
+						"data-focus": `link:${index}:url`,
+					});
 					const mono = h("span", { class: "link-row-mono", "aria-hidden": "true" }, [...(link.title || "?")][0]!);
 					title.addEventListener("input", () => (mono.textContent = [...(title.value || "?")][0]!));
 					title.addEventListener("change", () => {
@@ -234,7 +280,9 @@ export class SettingsView {
 						if (target < 0 || target >= links.length) return;
 						[links[index], links[target]] = [links[target]!, links[index]!];
 						save(links);
-						draw();
+						// Keep focus on the arrow that moved the link, so it can be pressed again.
+						const [same, other] = delta < 0 ? ["up", "down"] : ["down", "up"];
+						draw(`link:${target}:${same}`, `link:${target}:${other}`);
 					};
 					return h(
 						"div",
@@ -245,10 +293,30 @@ export class SettingsView {
 						h(
 							"div",
 							{ class: "link-row-actions" },
-							h("button", { class: "icon-btn", type: "button", title: "Move up", "aria-label": "Move up", disabled: index === 0, onclick: () => move(-1) }, icon("arrow-up")),
 							h(
 								"button",
-								{ class: "icon-btn", type: "button", title: "Move down", "aria-label": "Move down", disabled: index === links.length - 1, onclick: () => move(1) },
+								{
+									class: "icon-btn",
+									type: "button",
+									title: "Move up",
+									"aria-label": `Move ${link.title} up`,
+									"data-focus": `link:${index}:up`,
+									disabled: index === 0,
+									onclick: () => move(-1),
+								},
+								icon("arrow-up"),
+							),
+							h(
+								"button",
+								{
+									class: "icon-btn",
+									type: "button",
+									title: "Move down",
+									"aria-label": `Move ${link.title} down`,
+									"data-focus": `link:${index}:down`,
+									disabled: index === links.length - 1,
+									onclick: () => move(1),
+								},
 								icon("arrow-down"),
 							),
 							h(
@@ -258,10 +326,11 @@ export class SettingsView {
 									type: "button",
 									title: "Remove",
 									"aria-label": `Remove ${link.title}`,
+									"data-focus": `link:${index}:remove`,
 									onclick: () => {
 										links.splice(index, 1);
 										save(links);
-										draw();
+										draw(`link:${index}:remove`, `link:${index - 1}:remove`, "new-title");
 									},
 								},
 								icon("trash"),
@@ -270,11 +339,10 @@ export class SettingsView {
 					);
 				}),
 			);
+			if (focus.length) focusKey(section, ...focus);
 		};
-		draw();
-
-		const newTitle = h("input", { class: "field", placeholder: "title", maxlength: 40, "aria-label": "New link title" });
-		const newUrl = h("input", { class: "field link-url", placeholder: "example.com", "aria-label": "New link address", spellcheck: "false" });
+		const newTitle = h("input", { class: "field", placeholder: "title", maxlength: 40, "aria-label": "New link title", "data-focus": "new-title" });
+		const newUrl = h("input", { class: "field link-url", placeholder: "example.com", "aria-label": "New link address", spellcheck: "false", "data-focus": "new-url" });
 		const addForm = h(
 			"form",
 			{
@@ -306,7 +374,7 @@ export class SettingsView {
 			h("span", { class: "link-row-mono", "aria-hidden": "true" }, icon("plus")),
 			newTitle,
 			newUrl,
-			h("button", { class: "btn btn-accent", type: "submit" }, "add"),
+			h("button", { class: "btn btn-accent", type: "submit", "data-focus": "add" }, "add"),
 		);
 
 		const reset = h(
@@ -314,6 +382,7 @@ export class SettingsView {
 			{
 				class: "btn",
 				type: "button",
+				"data-focus": "reset",
 				onclick: () => {
 					this.callbacks.change({ quickLinks: null });
 					this.render();
@@ -323,7 +392,7 @@ export class SettingsView {
 			"restore defaults",
 		);
 
-		return this.sectionShell(
+		const section = this.sectionShell(
 			"links",
 			h("p", { class: "row-sub", style: "margin:0 0 6px" }, "Shown on the home page. Stored only in this browser."),
 			list,
@@ -331,6 +400,8 @@ export class SettingsView {
 			error,
 			h("div", { class: "links-footer" }, reset),
 		);
+		draw();
+		return section;
 	}
 
 	private dataSection(): HTMLElement {
@@ -339,6 +410,7 @@ export class SettingsView {
 			{
 				class: "btn btn-danger",
 				type: "button",
+				"data-focus": "clear",
 				onclick: async () => {
 					clear.disabled = true;
 					await this.callbacks.clearData();
@@ -369,7 +441,7 @@ export class SettingsView {
 					"key",
 					"access key",
 					"This server requires an access key. Signing out removes the session cookie from this browser.",
-					h("button", { class: "btn", type: "button", onclick: () => void this.callbacks.signOut() }, "sign out"),
+					h("button", { class: "btn", type: "button", "data-focus": "sign-out", onclick: () => void this.callbacks.signOut() }, "sign out"),
 				),
 			);
 		}

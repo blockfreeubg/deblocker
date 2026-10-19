@@ -1,5 +1,6 @@
 import http from "node:http";
 import type { AddressInfo } from "node:net";
+import { WebSocketServer, type WebSocket } from "ws";
 
 /**
  * A tiny website on 127.0.0.1 used as the destination in end-to-end tests
@@ -14,6 +15,8 @@ function page(title: string, body: string): string {
 export interface TargetSite {
 	origin: string;
 	port: number;
+	/** WebSockets to /ws that are currently open. */
+	openSockets(): number;
 	close(): Promise<void>;
 }
 
@@ -34,6 +37,8 @@ export async function startTargetSite(): Promise<TargetSite> {
 						<a id="to-two" href="/two">Go to page two</a>
 						<a id="to-redirect" href="/redirect">Redirect to page two</a>
 						<a id="to-blank" href="/two" target="_blank">Open in new window</a>
+						<button id="open-popup" onclick="window.open('/two', 'popup', 'width=480,height=360')">open popup</button>
+						<form id="top-form" action="/search" target="_top"><input name="q" value="from form"><button id="top-submit">search in top window</button></form>
 						<img id="pixel" src="/icon.png" alt="">
 						<p id="fetched">pending</p>
 						<script>
@@ -71,6 +76,21 @@ export async function startTargetSite(): Promise<TargetSite> {
 				return html(200, page("Cookie Show", `<p id="cookie">${(req.headers.cookie ?? "none").replace(/</g, "&lt;")}</p>`));
 			case "/search":
 				return html(200, page(`Results for ${url.searchParams.get("q") ?? ""}`, `<p id="query">${(url.searchParams.get("q") ?? "").replace(/</g, "&lt;")}</p>`));
+			case "/ws":
+				return html(
+					200,
+					page(
+						"Socket Page",
+						`<p id="ws">connecting</p>
+						<script>
+							const status = document.getElementById("ws");
+							const socket = new WebSocket("ws://" + location.host + "/ws");
+							socket.onopen = () => socket.send("hi");
+							socket.onmessage = (event) => (status.textContent = "echo:" + event.data);
+							socket.onerror = () => (status.textContent = "error");
+						</script>`,
+					),
+				);
 			case "/slow":
 				await new Promise((resolve) => setTimeout(resolve, 2500));
 				return html(200, page("Slow Page", `<h1 id="heading">Slow page</h1>`));
@@ -79,10 +99,20 @@ export async function startTargetSite(): Promise<TargetSite> {
 		}
 	};
 	const server = http.createServer((req, res) => void handle(req, res));
+	const sockets = new Set<WebSocket>();
+	const wss = new WebSocketServer({ noServer: true });
+	wss.on("connection", (socket) => {
+		sockets.add(socket);
+		socket.on("close", () => sockets.delete(socket));
+		socket.on("message", (data) => socket.send(String(data)));
+	});
 	// libcurl asks plain-http servers for an "h2c" upgrade. Node routes those requests to the
 	// "upgrade" event (without parsing the body), so answer them here as ordinary HTTP/1.1.
 	server.on("upgrade", (req, socket, head: Buffer) => {
-		if (String(req.headers.upgrade).toLowerCase() === "websocket") return socket.destroy();
+		if (String(req.headers.upgrade).toLowerCase() === "websocket") {
+			if (req.url !== "/ws") return socket.destroy();
+			return wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+		}
 		const length = Number(req.headers["content-length"] ?? 0);
 		let body = Buffer.from(head ?? []);
 		const respond = () => {
@@ -104,6 +134,11 @@ export async function startTargetSite(): Promise<TargetSite> {
 	return {
 		origin: `http://127.0.0.1:${port}`,
 		port,
-		close: () => new Promise((resolve) => server.close(() => resolve())),
+		openSockets: () => sockets.size,
+		close: () =>
+			new Promise((resolve) => {
+				for (const socket of sockets) socket.terminate();
+				server.close(() => resolve());
+			}),
 	};
 }

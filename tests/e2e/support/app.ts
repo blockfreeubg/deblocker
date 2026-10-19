@@ -23,14 +23,14 @@ export interface RunningApp {
 	stop(): Promise<void>;
 }
 
-/** Starts the built server (dist/) as a child process with the given environment. */
+/** Starts the built server (dist/) as a child process with the given environment (PORT picks a fixed port). */
 export async function startApp(env: Record<string, string>): Promise<RunningApp> {
 	if (!existsSync(path.join(root, "dist/server/index.js"))) throw new Error('Run "npm run build" before the end-to-end tests.');
-	const port = await freePort();
+	const port = env.PORT ? Number(env.PORT) : await freePort();
 	let output = "";
 	const child: ChildProcess = spawn(process.execPath, ["dist/server/index.js"], {
 		cwd: root,
-		env: { ...process.env, PORT: String(port), HOST: "127.0.0.1", LOG_LEVEL: "warn", ...env },
+		env: { ...process.env, HOST: "127.0.0.1", LOG_LEVEL: "warn", ...env, PORT: String(port) },
 		stdio: ["ignore", "pipe", "pipe"],
 	});
 	child.stdout!.on("data", (chunk) => (output += chunk));

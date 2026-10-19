@@ -149,7 +149,8 @@ export function loadConfig(env: Env = process.env, argv: string[] = process.argv
 
 	const config: ServerConfig = {
 		port: int("PORT", 8080, 1, 65535),
-		host: read("HOST") ?? "0.0.0.0",
+		// Development servers and ones that may reach private networks only listen locally unless told otherwise.
+		host: read("HOST") ?? (dev || destinations.allowPrivate ? "127.0.0.1" : "0.0.0.0"),
 		basePath,
 		trustProxy: parseTrustProxy(read("TRUST_PROXY"), problems),
 		dev,

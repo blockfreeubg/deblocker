@@ -55,7 +55,10 @@ It is meant for legitimate browsing, testing and research on infrastructure you 
 - **Tabs survive a reload** of Deblocker itself. Links that open a new window, and proxied URLs opened
   directly, come back into the Deblocker interface.
 - **Responsive.** Desktop, Chromebook, tablet, and phone (the rail becomes a bottom bar).
-- **Keyboard shortcuts.** Enter, Ctrl/⌘+L, Alt+←/→, Alt+R, Alt+T, Alt+W, Alt+Home, Alt+1–9.
+- **Keyboard shortcuts.** Enter, Ctrl/⌘+L, Alt+←/→, Alt+R, Alt+T, Alt+W, Alt+Home, Alt+1–9 (Option on a Mac).
+  They never take keys from text fields: Alt/Option+arrows still move by word, and Option still types characters.
+- **The browser's Back button stays inside Deblocker.** It goes back in the current tab rather than leaving
+  the interface.
 - **Responsible defaults.** No access to loopback/private/link-local networks, ports 80/443 only, no UDP,
   an optional host allowlist or blocklist, an optional access key, WebSocket origin checks, per-IP limits,
   and logs that don't record where visitors go.
@@ -88,7 +91,9 @@ The server never sees decrypted HTTPS traffic. It sees which host and port each 
 
 ## Requirements
 
-- **Node.js 20.11 or newer** (22 LTS recommended) and npm.
+- **Node.js 22.12 or newer** (or 20.19+) and npm. The build tool (Vite 8) needs these versions, and the
+  `nodejs` package in many Linux distributions is older: install from [nodejs.org](https://nodejs.org/en/download)
+  or NodeSource, and check with `node -v`.
 - **A secure context in the browser.** Service workers only run on `https://` or on `http://localhost`.
   For anything other than local testing, serve Deblocker over HTTPS.
 - **WebSocket support** end to end (reverse proxies, CDNs and load balancers must allow upgrades).
@@ -104,24 +109,34 @@ npm run dev
 ```
 
 Open <http://localhost:8080>. `npm run dev` runs the server with [tsx](https://github.com/privatenumber/tsx)
-in watch mode, and serves the frontend through Vite with hot reload.
+in watch mode, and serves the frontend through Vite with hot reload. In dev mode the server listens on
+`127.0.0.1` only, unless you set `HOST`.
 
 To test against sites on your own machine or LAN during development, allow private destinations
 **for that session only**:
 
 ```bash
-ALLOW_PRIVATE_DESTINATIONS=true ALLOWED_PORTS='*' npm run dev
+HOST=127.0.0.1 ALLOW_PRIVATE_DESTINATIONS=true ALLOWED_PORTS='*' npm run dev
 ```
+
+With private destinations allowed, anyone who can connect to the server can reach your local network
+through it. Keep it bound to `127.0.0.1` (the default whenever this flag is on and `HOST` is unset). While
+the flag is on, the WebSocket also refuses requests addressed to any hostname other than an IP address,
+`localhost` or an `ALLOWED_ORIGINS` entry, which stops websites from reaching it through DNS rebinding.
 
 ## Production build
 
 ```bash
-npm ci                 # install exact versions from package-lock.json
+npm ci                 # install exact versions from package-lock.json (on ARM, see below)
 npm run build          # vite build (frontend -> dist/public) + tsc (server -> dist/server)
 npm start              # node dist/server/index.js
 ```
 
 Use `npm run check` to type-check, run the unit and integration tests, and build in one step.
+
+On ARM64 hosts (Raspberry Pi, Graviton, Ampere), use `npm ci --ignore-scripts`. Otherwise npm tries to
+compile an optional native WebSocket add-on (`bufferutil`, which has no ARM64 build) and fails unless
+python3, make and g++ are installed. Without the add-on, the server uses its JavaScript fallback.
 
 Settings are environment variables. Node doesn't load `.env` files automatically. Either export the
 variables, or start with `node --env-file=.env dist/server/index.js`, or use your service manager's env file.
@@ -133,10 +148,10 @@ Every setting is optional. See [`.env.example`](.env.example) for a commented te
 | Variable | Default | Description |
 |---|---|---|
 | `PORT` | `8080` | Port to listen on. |
-| `HOST` | `0.0.0.0` | Interface to bind. Use `127.0.0.1` behind a local reverse proxy. |
+| `HOST` | `0.0.0.0` | Interface to bind. Use `127.0.0.1` behind a local reverse proxy. Defaults to `127.0.0.1` in dev mode and when `ALLOW_PRIVATE_DESTINATIONS` is on. |
 | `BASE_PATH` | `/` | Path Deblocker is served under, e.g. `/deblocker`. See [sub-path deployment](#sub-path-deployment). |
 | `TRUST_PROXY` | `false` | Trust `X-Forwarded-*` from a reverse proxy: `loopback`, a hop count (`1`), or proxy IPs/CIDRs. |
-| `LOG_LEVEL` | `info` | `error`, `warn`, `info` or `debug`. Only `debug` logs destinations. |
+| `LOG_LEVEL` | `info` | `error`, `warn`, `info` or `debug`. Only `debug` logs destinations, including refused ones. |
 | `TRANSPORT` | `libcurl` | Browser transport: `libcurl` or `epoxy`. |
 | `ALLOWED_PORTS` | `80,443` | Destination ports or ranges (`80,443,8000-8100`), or `*`. |
 | `ALLOW_PRIVATE_DESTINATIONS` | `false` | Allow loopback/private/link-local destinations. **Development only.** |
@@ -144,10 +159,10 @@ Every setting is optional. See [`.env.example`](.env.example) for a commented te
 | `DESTINATION_BLOCKLIST` | (empty) | These hosts and their subdomains are always refused. |
 | `MAX_CONNECTIONS_PER_IP` | `24` | Concurrent Wisp WebSockets per client IP. |
 | `MAX_STREAMS_PER_CONNECTION` | `128` | Concurrent streams per Wisp connection. |
-| `ACCESS_KEY` | (unset) | If set (min. 8 chars), visitors must enter it once before the backend accepts them. |
-| `SESSION_SECRET` | random | HMAC secret for access-key session cookies (min. 32 chars). Set it so sessions survive restarts. |
+| `ACCESS_KEY` | (unset) | If set (min. 8 chars), visitors must enter it once before the backend accepts them. Changing it signs everyone out. |
+| `SESSION_SECRET` | random | HMAC secret for access-key session cookies (min. 32 chars). Set it so sessions survive restarts. Changing it signs everyone out. |
 | `SESSION_TTL_HOURS` | `168` | Lifetime of an access-key session. |
-| `ALLOWED_ORIGINS` | (empty) | Extra origins allowed to open the Wisp WebSocket (when a proxy rewrites `Host`). |
+| `ALLOWED_ORIGINS` | (empty) | Extra origins allowed to open the Wisp WebSocket and to submit the access key, for proxies that rewrite `Host`. With private destinations on, these are also the only hostnames (besides IP addresses and `localhost`) the WebSocket accepts. |
 | `DEFAULT_SEARCH_ENGINE` | `duckduckgo` | `duckduckgo`, `google`, `bing`, `brave`, `startpage`, `wikipedia`, or a URL template with `%s`. |
 | `DEFAULT_QUICK_LINKS` | built-in list | Comma-separated `Title\|https://url` pairs shown until a visitor customises them. |
 | `SCRAMJET_DIST_DIR` | (unset) | Serve a locally built Scramjet core `dist/` instead of the npm package. |
@@ -186,17 +201,19 @@ work on serverless functions that cannot hold WebSocket connections open: the Wi
 ### Option A: VPS with systemd and a reverse proxy
 
 ```bash
-# 1. Install Node.js 22 (e.g. from https://nodejs.org or your distribution) and create a service user
+# 1. Install Node.js 22.12+ (from https://nodejs.org or NodeSource; distribution packages are often
+#    too old, check `node -v`) and create a service user
 sudo useradd --system --home /opt/deblocker --shell /usr/sbin/nologin deblocker
 
-# 2. Get the code and build it
+# 2. Get the code and build it. The checkout stays owned by root: the service only reads it.
 sudo git clone <repository-url> /opt/deblocker
 cd /opt/deblocker
-sudo npm ci
+sudo npm ci --ignore-scripts
 sudo npm run build
-sudo chown -R deblocker:deblocker /opt/deblocker
 
 # 3. Configure (see .env.example). Bind to localhost and trust the local reverse proxy.
+#    The file may hold ACCESS_KEY and SESSION_SECRET, so only root may read it (systemd reads it as root).
+sudo install -m 600 /dev/null /etc/deblocker.env
 sudo tee /etc/deblocker.env >/dev/null <<'EOF'
 HOST=127.0.0.1
 PORT=8080
@@ -241,9 +258,21 @@ location / {
 }
 ```
 
-Get a certificate with `sudo certbot --nginx -d proxy.example.com` (or use the paths in the example file).
+The example refers to the certificate files, so nginx refuses to load it until they exist. Get the
+certificate first, while nginx still runs its default site, then install the config:
 
-To update a deployment: `git pull && npm ci && npm run build && sudo systemctl restart deblocker`.
+```bash
+sudo certbot certonly --nginx -d proxy.example.com
+sudo cp deploy/nginx.conf /etc/nginx/conf.d/deblocker.conf   # then replace proxy.example.com
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+To update a deployment:
+
+```bash
+cd /opt/deblocker && sudo git pull && sudo npm ci --ignore-scripts && sudo npm run build && sudo systemctl restart deblocker
+```
+
 Visitors pick up the new service worker automatically on their next page load.
 
 ### Option B: Docker
@@ -251,8 +280,11 @@ Visitors pick up the new service worker automatically on their next page load.
 ```bash
 docker build -t deblocker .
 docker run -d --name deblocker --restart unless-stopped \
-  -p 127.0.0.1:8080:8080 -e TRUST_PROXY=1 --env-file .env deblocker
+  -p 127.0.0.1:8080:8080 --env-file .env -e HOST=0.0.0.0 -e PORT=8080 -e TRUST_PROXY=1 deblocker
 ```
+
+`HOST` and `PORT` are set after `--env-file` so a value in `.env` meant for a bare-metal install can't move
+the server away from the published port. The Compose file pins them the same way.
 
 Or use `docker compose up -d --build` with the included [`docker-compose.yml`](docker-compose.yml) (Compose
 2.24 or newer for the optional `.env`). Put a TLS-terminating reverse proxy in front as above. The image
@@ -274,7 +306,15 @@ To serve Deblocker at `https://example.com/deblocker/` next to other apps:
 2. Configure the reverse proxy to forward that prefix **without stripping it**:
    - nginx: `location /deblocker/ { proxy_pass http://127.0.0.1:8080; … }` (no trailing slash or path on
      `proxy_pass`);
-   - Caddy: `handle /deblocker* { reverse_proxy 127.0.0.1:8080 }` (`handle`, not `handle_path`).
+   - Caddy: use `handle`, not `handle_path`, which would strip the prefix:
+
+     ```caddyfile
+     proxy.example.com {
+     	handle /deblocker* {
+     		reverse_proxy 127.0.0.1:8080
+     	}
+     }
+     ```
 3. No rebuild is needed. The frontend uses relative asset paths and derives the service-worker scope, the
    Scramjet prefix, the engine paths and the Wisp URL from the page's own location. `/deblocker` redirects to
    `/deblocker/`.
@@ -307,11 +347,21 @@ Deblocker is designed so that running it publicly doesn't hand strangers an open
   - **UDP** is disabled.
 - **Only your own site can use the WebSocket.** Upgrades must carry an `Origin` matching the request's
   `Host` (or `ALLOWED_ORIGINS`), so other websites can't use visitors' browsers to tunnel through your server.
+  While private destinations are allowed (development), the `Host` must also be an IP address, `localhost`
+  or an `ALLOWED_ORIGINS` host, which defeats DNS rebinding.
 - **Optional access key.** With `ACCESS_KEY` set, the Wisp endpoint requires a signed, HttpOnly,
-  `SameSite=Strict` session cookie. Key checks use constant-time comparison and are rate-limited
-  (10 attempts per 15 minutes per IP).
-- **Limits.** Concurrent connections per IP and streams per connection are capped.
-- **Privacy-preserving logs.** Destinations are only logged at `LOG_LEVEL=debug`.
+  `SameSite=Strict` session cookie. Key checks use constant-time comparison and are rate-limited: 10 attempts
+  per 15 minutes per client, plus 300 per 15 minutes in total. The cookie's signature covers the key, so
+  changing `ACCESS_KEY` (or `SESSION_SECRET`) signs everyone out. When a session ends while Deblocker is
+  open, the interface asks for the key again rather than reporting the server as down.
+- **Limits.** Concurrent connections per client and streams per connection are capped. IPv6 clients
+  are counted per /64, so rotating addresses within one allocation doesn't get around the limits or the
+  key's rate limit. WebSocket frames are limited to 1 MiB. Data waiting for a slow destination is
+  budgeted per stream, per connection and server-wide: a stream that exceeds its budget is closed.
+  Malformed WebSocket traffic closes that one connection without affecting the server.
+- **Privacy-preserving logs.** Destinations, including refused and failed connections, are only logged at
+  `LOG_LEVEL=debug`. At other levels the log records client addresses for rejected connections, not the
+  sites visitors open.
 - **No secrets in the browser.** The client receives only the public config. Error pages generated for
   failed loads are HTML-escaped and served with a script-blocking CSP.
 - **Hardening headers.** `nosniff`, `no-referrer`, `frame-ancestors 'self'`, no `X-Powered-By`.
@@ -333,9 +383,11 @@ npm run build && npm run test:e2e
 The end-to-end suite starts the built server and a small local website. It drives Deblocker in Chromium
 and checks: navigation from the home page and the omnibox, links, back/forward, redirects,
 `history.pushState`, `fetch()`, form POST bodies, search, the https→http fallback, error pages, refused
-schemes, tabs, new-window links, recovery after the browser stops the idle service worker, settings and tab
-persistence across reloads, quick-link editing, the blocked-destination messages (client-side and
-server-side), sub-path deployment and the access-key flow.
+schemes, tabs, new-window links and `window.open()` popups, forms targeting the top window, WebSocket
+cleanup when a page goes away, the browser's own Back button, keyboard shortcuts (including keys they must
+leave alone), settings focus handling, recovery after the browser stops the idle service worker, settings and
+tab persistence across reloads, quick-link editing, the blocked-destination messages (client-side and
+server-side), sub-path deployment, and the access-key flow, including a session that ends mid-browse.
 
 It needs a Chromium/Chrome binary: set `CHROMIUM_PATH=/path/to/chrome` if it isn't found automatically.
 Playwright's browsers work too. If no browser is found, the browser suites are skipped.
@@ -376,7 +428,9 @@ deploy/               nginx, Caddy and systemd examples
 | "Deblocker must be opened over HTTPS" | Service workers need a secure context. Use HTTPS, or `http://localhost` for local testing. |
 | Status shows **backend unreachable** / "Can't reach the Deblocker server" | The Wisp WebSocket at `<base>wisp/` can't be opened. Check that the reverse proxy forwards `Upgrade`/`Connection` headers (see `deploy/nginx.conf`) and that the CDN or firewall allows WebSockets. Look for 403/401/429 in the server log. |
 | Server log: `wisp: rejected connection … with origin …` (HTTP 403) | The WebSocket `Origin` doesn't match the `Host` header Deblocker sees. Forward the original host **including the port** (`proxy_set_header Host $http_host;`), or list the public origin in `ALLOWED_ORIGINS`. |
-| 401 on `wisp/` | `ACCESS_KEY` is set and the browser has no valid session. Enter the key on the home page. If you didn't set `SESSION_SECRET`, sessions reset whenever the server restarts. |
+| 401 on `wisp/`, or "Access key needed" | `ACCESS_KEY` is set and the browser has no valid session. Enter the key on the home page. Sessions end when they expire (`SESSION_TTL_HOURS`), when `ACCESS_KEY` or `SESSION_SECRET` changes, and on every restart if `SESSION_SECRET` isn't set. |
+| Server log: `wisp: rejected connection … for host …` (HTTP 403 "Host not allowed") | `ALLOW_PRIVATE_DESTINATIONS` is on and the page was opened through a hostname. Open it via `localhost` or an IP address, or add the origin to `ALLOWED_ORIGINS`. |
+| Access key is refused with 403 behind a proxy | The proxy rewrites `Host`. Forward it unchanged (`$http_host`), or set `TRUST_PROXY` so `X-Forwarded-Host` is used, or list the public origin in `ALLOWED_ORIGINS`. |
 | 429 on `wisp/` | `MAX_CONNECTIONS_PER_IP` reached. Many users behind one NAT? Raise the limit, and set `TRUST_PROXY` correctly so real client IPs are used. |
 | Every site shows "Blocked by this server" | The address is private or local, uses a port outside `ALLOWED_PORTS`, or `DESTINATION_ALLOWLIST`/`BLOCKLIST` refuses it. With an allowlist, remember that sites load assets from other domains (CDNs) that must be allowed too. |
 | Pages load without styles or images | Usually a site serving assets from a host or port your policy refuses. Run with `LOG_LEVEL=debug` to see refused destinations. |
@@ -391,15 +445,23 @@ deploy/               nginx, Caddy and systemd examples
 
 - **Not every site works through a proxy.** Expect trouble with strict bot protection, DRM video, WebRTC
   calls, and sign-in flows that check the network you connect from.
-- Popup-based sign-in flows that rely on `window.opener` lose it. New windows open as separate Deblocker
-  windows.
+- Popups and links that open a new window open as a separate Deblocker window showing that page. The
+  popup has no `window.opener`, so sign-in flows that report back through the opener don't complete.
+- The browser's Back button steps back through the shared history of every tab's frame. Deblocker turns
+  Back on the interface into Back in the current tab. A link followed in a background tab can still be
+  undone by the browser's Back while another tab is shown. Deblocker's own Back button and Alt+← always act
+  on the current tab only.
+- Browsers ignore history entries a page adds before you interact with it. Until you first click or press
+  a key in the Deblocker interface, the browser's Back button leaves Deblocker. Your tabs come back with
+  Forward or a reload.
 - Scramjet 2.x is published as an **alpha** (`2.0.67-alpha.2`). Deblocker pins exact versions, and works
   around three upstream issues:
   - the start-up/update service-worker revival races;
   - a `pushState` URL bug that is fixed on Scramjet's main branch;
   - `HttpCachePlugin` dropping `Set-Cookie` from the responses it caches.
 - Keyboard shortcuts work while the Deblocker interface or a proxied page has focus. Browser-reserved
-  shortcuts (Ctrl+T/W/Tab) can't be overridden.
+  shortcuts (Ctrl+T/W/Tab) can't be overridden. On a Mac, Option+letter shortcuts only work outside text
+  fields, where Option doesn't type a character.
 - Deblocker relies on service workers, WebAssembly and modern CSS. Very old browsers aren't supported.
 
 ## Updating or building Scramjet from source

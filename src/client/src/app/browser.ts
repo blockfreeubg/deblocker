@@ -5,7 +5,7 @@ import {
 	type DestinationHints,
 	type InternalPage,
 } from "../../../shared/url.js";
-import type { NavigationError, ProxyEngine, ProxyFrame } from "../engine/types.js";
+import type { NavigationError, NavigationKind, ProxyEngine, ProxyFrame } from "../engine/types.js";
 import { $, h, icon } from "../lib/dom.js";
 import type { SavedSession } from "../lib/storage.js";
 import { toast } from "../ui/toast.js";
@@ -41,7 +41,12 @@ interface Tab {
 	error: NavigationError | null;
 	notice: { title: string; text: string } | null;
 	frame: ProxyFrame | null;
+	/** Tab strip elements, built once so clicks and keyboard focus survive updates. */
 	element: HTMLElement;
+	mainEl: HTMLButtonElement;
+	faviconEl: HTMLElement;
+	titleEl: HTMLElement;
+	closeEl: HTMLButtonElement;
 	slowTimer: number | undefined;
 	slow: boolean;
 	/** Restored background tabs load only when first selected. */
@@ -71,6 +76,9 @@ export class Browser {
 	private active: Tab | null = null;
 	private nextId = 1;
 	private omniboxDirty = false;
+	/** While the access key is needed: the tab to reopen after unlocking, and a New Tab opened just for the unlock form. */
+	private resumeTarget: Tab | null = null;
+	private lockPlaceholder: Tab | null = null;
 
 	private readonly tabsEl = $("tabs");
 	private readonly newTabButton = $("newTab");
@@ -97,6 +105,16 @@ export class Browser {
 		this.reloadBtn.addEventListener("click", () => (this.active?.loading ? this.stop() : this.reload()));
 		$("homeBtn").addEventListener("click", () => this.home());
 		$("loaderStop").addEventListener("click", () => this.stop());
+		// Most mouse wheels only scroll vertically; let them scroll an overflowing tab strip sideways.
+		this.tabsEl.addEventListener(
+			"wheel",
+			(event) => {
+				if (Math.abs(event.deltaY) <= Math.abs(event.deltaX) || this.tabsEl.scrollWidth <= this.tabsEl.clientWidth) return;
+				event.preventDefault();
+				this.tabsEl.scrollLeft += event.deltaMode === WheelEvent.DOM_DELTA_LINE ? event.deltaY * 32 : event.deltaY;
+			},
+			{ passive: false },
+		);
 		this.fullscreenBtn.addEventListener("click", () => {
 			this.active?.frame?.iframe.requestFullscreen().catch(() => toast({ title: "Full screen isn't available here", tone: "error", timeout: 4000 }));
 		});
@@ -131,6 +149,10 @@ export class Browser {
 		return this.active?.place ?? null;
 	}
 
+	get canGoBack(): boolean {
+		return Boolean(this.active && this.active.index > 0);
+	}
+
 	get tabCount(): number {
 		return this.tabs.length;
 	}
@@ -147,6 +169,11 @@ export class Browser {
 			toast({ title: "Too many tabs", message: `Deblocker keeps up to ${MAX_TABS} tabs open. Close one to open another.`, tone: "error", timeout: 5000 });
 			return null;
 		}
+		const mainEl = h("button", { class: "tab-main", type: "button" });
+		const faviconEl = h("span", { class: "tab-favicon" });
+		const titleEl = h("span", { class: "tab-title" });
+		const closeEl = h("button", { class: "tab-close", type: "button", title: "Close tab (Alt+W)" }, icon("x"));
+		mainEl.append(faviconEl, titleEl);
 		const tab: Tab = {
 			id: this.nextId++,
 			place,
@@ -160,14 +187,23 @@ export class Browser {
 			error: null,
 			notice: null,
 			frame: null,
-			element: h("div", { class: "tab", role: "presentation" }),
+			element: h("div", { class: "tab" }, mainEl, closeEl),
+			mainEl,
+			faviconEl,
+			titleEl,
+			closeEl,
 			slowTimer: undefined,
 			slow: false,
 			deferred: deferred && !activate && place.kind === "web",
 			attempt: 0,
 		};
+		mainEl.addEventListener("click", () => this.select(tab));
+		mainEl.addEventListener("auxclick", (event) => {
+			if (event.button === 1) this.closeTab(tab);
+		});
+		closeEl.addEventListener("click", () => this.closeTab(tab));
 		this.tabs.push(tab);
-		this.tabsEl.insertBefore(tab.element, this.newTabButton);
+		this.tabsEl.append(tab.element);
 		if (activate) this.select(tab);
 		if (!tab.deferred) this.display(tab, place);
 		this.renderTab(tab);
@@ -179,6 +215,7 @@ export class Browser {
 	closeTab(tab: Tab) {
 		const index = this.tabs.indexOf(tab);
 		if (index === -1) return;
+		const hadFocus = tab.element.contains(document.activeElement);
 		this.tabs.splice(index, 1);
 		window.clearTimeout(tab.slowTimer);
 		tab.frame?.destroy();
@@ -191,6 +228,7 @@ export class Browser {
 			return;
 		}
 		if (this.active === tab) this.select(this.tabs[Math.min(index, this.tabs.length - 1)]!);
+		if (hadFocus) this.active?.mainEl.focus();
 		this.persist();
 	}
 
@@ -234,6 +272,7 @@ export class Browser {
 	}
 
 	restore(session: SavedSession | null, initialUrl: string | null) {
+		const locked = this.deps.isLocked();
 		if (session) {
 			for (const saved of session.tabs) {
 				const resolved = resolveInput(saved.url, this.deps.searchTemplate());
@@ -242,13 +281,49 @@ export class Browser {
 				if (place) this.newTab(place, false, true);
 			}
 			const target = this.tabs[session.active] ?? this.tabs[0];
-			if (target) this.select(target);
+			// While locked, web tabs stay unloaded and the home page (with the unlock form) is shown.
+			if (target && (!locked || target.place.kind === "page")) this.select(target);
+			else if (locked) {
+				this.resumeTarget = target ?? null;
+				let home: Tab | null | undefined = this.tabs.find((tab) => tab.place.kind === "page" && tab.place.page === "home");
+				if (!home) home = this.lockPlaceholder = this.newTab(undefined, false);
+				if (home) this.select(home);
+			}
 		}
 		if (this.tabs.length === 0) this.newTab();
 		if (initialUrl) {
 			const error = this.submit(initialUrl, { newTab: this.active?.place.kind === "web" });
 			if (error) toast({ title: "Can't open that link", message: error, tone: "error" });
 		}
+	}
+
+	/** After the access key was entered: return to the page the visitor was on and reload pages that failed meanwhile. */
+	resume() {
+		for (const tab of this.tabs) {
+			if (tab.place.kind === "web" && tab.error?.kind === "locked") tab.deferred = true;
+		}
+		const target = this.resumeTarget;
+		const placeholder = this.lockPlaceholder;
+		this.resumeTarget = this.lockPlaceholder = null;
+		if (target && this.tabs.includes(target)) {
+			const sentHome = target === this.active && target.place.kind === "page" && target.place.page === "home";
+			if (sentHome && this.canGoBack) this.back();
+			else if (target !== this.active) this.select(target);
+		}
+		if (placeholder && placeholder !== this.active && placeholder.history.length === 1) this.closeTab(placeholder);
+		const tab = this.active;
+		if (tab?.deferred && tab.place.kind === "web") {
+			tab.deferred = false;
+			this.display(tab, tab.place, true);
+		}
+	}
+
+	/** The session ended (access key required again): stop loading pages and show the unlock form. */
+	lock() {
+		for (const tab of this.tabs) tab.frame?.stop();
+		const tab = this.active;
+		if (tab?.place.kind === "web") this.resumeTarget = tab;
+		this.home();
 	}
 
 	// ---------------------------------------------------------------- navigation
@@ -287,11 +362,14 @@ export class Browser {
 	}
 
 	navigate(tab: Tab, place: Place) {
-		if (!samePlace(tab.history[tab.index], place)) {
-			tab.history = tab.history.slice(0, tab.index + 1);
-			tab.history.push(place);
-			tab.index = tab.history.length - 1;
+		if (samePlace(tab.history[tab.index], place)) {
+			// Opening the address that is already showing reloads it, as in any browser.
+			this.display(tab, place, place.kind === "web");
+			return;
 		}
+		tab.history = tab.history.slice(0, tab.index + 1);
+		tab.history.push(place);
+		tab.index = tab.history.length - 1;
 		this.display(tab, place);
 	}
 
@@ -336,6 +414,7 @@ export class Browser {
 		const tab = this.active;
 		if (!tab?.frame || !tab.loading) return;
 		tab.frame.stop();
+		tab.expectingCommit = false;
 		this.finishLoading(tab);
 	}
 
@@ -349,9 +428,11 @@ export class Browser {
 		tab.slow = false;
 
 		if (place.kind === "page") {
+			// Leaving for an internal page cancels a navigation still in flight, so it can't land later
+			// and overwrite the history entry. The page's title and icon are kept for coming back.
+			if (tab.loading || tab.expectingCommit) tab.frame?.stop();
 			tab.loading = false;
-			tab.title = PAGE_TITLES[place.page];
-			tab.favicon = null;
+			tab.expectingCommit = false;
 		} else {
 			const blocked = explainBlockedDestination(place.url, this.deps.hints());
 			if (blocked) {
@@ -362,7 +443,9 @@ export class Browser {
 				tab.loading = false;
 				tab.title = hostLabel(place.url);
 				tab.error = { kind: "transport", url: place.url, detail: this.deps.engine.failure ?? "The proxy engine could not start." };
-			} else if (forceLoad || !tab.frame || tab.frame.currentUrl !== place.url) {
+			} else if (forceLoad || !tab.frame || tab.expectingCommit || tab.frame.showingError || tab.frame.currentUrl !== place.url) {
+				// Reload unless the frame already shows exactly this page (an unfinished navigation or a
+				// failed load doesn't count).
 				this.load(tab, place.url);
 			}
 		}
@@ -394,13 +477,16 @@ export class Browser {
 
 	private frameEvents(tab: Tab) {
 		return {
-			urlChanged: (url: string) => this.onUrlChanged(tab, url),
+			urlChanged: (url: string, kind: NavigationKind) => this.onUrlChanged(tab, url, kind),
 			titleChanged: (title: string) => {
 				if (tab.place.kind !== "web") return;
-				tab.title = title.trim() || hostLabel(tab.place.url);
+				const next = title.trim() || hostLabel(tab.place.url);
+				if (next === tab.title) return;
+				tab.title = next;
 				this.renderTab(tab);
 			},
 			faviconChanged: (href: string | null) => {
+				if (href === tab.favicon) return;
 				tab.favicon = href;
 				this.renderTab(tab);
 			},
@@ -415,30 +501,32 @@ export class Browser {
 		};
 	}
 
-	private onUrlChanged(tab: Tab, url: string) {
+	private onUrlChanged(tab: Tab, url: string, kind: NavigationKind) {
 		// The frame keeps running while the tab shows an internal page; its history stays as it was.
 		if (tab.place.kind === "page") return;
 		tab.attempt += 1;
 		const place: Place = { kind: "web", url };
-		const current = tab.history[tab.index];
 		if (tab.expectingCommit) {
-			// First URL after go(): replace the entry so redirects (example.com -> www.example.com) don't add history.
+			// First URL after Deblocker navigated the frame: it replaces the entry, so redirects
+			// (example.com -> www.example.com) don't add history.
 			tab.expectingCommit = false;
 			tab.history[tab.index] = place;
-		} else if (samePlace(current, place)) {
-			// no change
-		} else if (samePlace(tab.history[tab.index - 1], place)) {
-			tab.index -= 1;
-		} else if (samePlace(tab.history[tab.index + 1], place)) {
-			tab.index += 1;
-		} else {
+		} else if (kind === "replace") {
+			tab.history[tab.index] = place;
+		} else if (kind === "traverse") {
+			// The browser's own back/forward (or history.back() in the page) moved through this frame's
+			// history; find the entry it arrived at, nearest first.
+			const target = [tab.index - 1, tab.index + 1, ...tab.history.keys()].find((i) => samePlace(tab.history[i], place));
+			if (target !== undefined) tab.index = target;
+			else tab.history[tab.index] = place;
+		} else if (!samePlace(tab.history[tab.index], place)) {
 			tab.history = tab.history.slice(0, tab.index + 1);
 			tab.history.push(place);
 			tab.index = tab.history.length - 1;
 		}
 		tab.place = place;
 		tab.error = null;
-		if (tab.title === "" || tab.title === hostLabel(url)) tab.title = hostLabel(url);
+		// The title is left alone: new documents report theirs as soon as they parse it.
 		this.renderTab(tab);
 		if (tab === this.active) this.renderToolbar();
 		this.persist();
@@ -496,29 +584,17 @@ export class Browser {
 			favicon = img;
 		} else favicon = icon("globe");
 
-		const main = h(
-			"button",
-			{
-				class: "tab-main",
-				type: "button",
-				role: "tab",
-				"aria-selected": String(selected),
-				title: tab.place.kind === "web" ? `${title}\n${tab.place.url}` : title,
-				onclick: () => this.select(tab),
-				onauxclick: (event: Event) => {
-					if ((event as MouseEvent).button === 1) this.closeTab(tab);
-				},
-			},
-			h("span", { class: "tab-favicon" }, favicon),
-			h("span", { class: "tab-title" }, title),
-		);
-		const close = h(
-			"button",
-			{ class: "tab-close", type: "button", title: "Close tab (Alt+W)", "aria-label": `Close ${title}`, onclick: () => this.closeTab(tab) },
-			icon("x"),
-		);
-		tab.element.setAttribute("aria-selected", String(selected));
-		tab.element.replaceChildren(main, close);
+		tab.element.classList.toggle("is-active", selected);
+		if (selected) tab.mainEl.setAttribute("aria-current", "page");
+		else tab.mainEl.removeAttribute("aria-current");
+		tab.mainEl.title = tab.place.kind === "web" ? `${title}\n${tab.place.url}` : title;
+		tab.closeEl.setAttribute("aria-label", `Close ${title}`);
+		const iconKey = `${tab.loading}|${tab.place.kind}|${Boolean(tab.error || tab.notice)}|${tab.favicon ?? ""}`;
+		if (tab.faviconEl.dataset.key !== iconKey) {
+			tab.faviconEl.dataset.key = iconKey;
+			tab.faviconEl.replaceChildren(favicon);
+		}
+		if (tab.titleEl.textContent !== title) tab.titleEl.textContent = title;
 		if (selected) document.title = tab.place.kind === "page" && tab.place.page === "home" ? "Deblocker" : `${title} · Deblocker`;
 	}
 
@@ -593,6 +669,11 @@ export class Browser {
 					title = "Secure connection failed";
 					text = `A secure connection to ${host} couldn't be established.`;
 					break;
+				case "locked":
+					title = "Access key needed";
+					text = "Your session with this Deblocker server has ended. Enter the access key on the home page to continue.";
+					tone = "info";
+					break;
 				case "transport":
 					title = "Can't reach the Deblocker server";
 					text = "The proxy backend isn't responding. The server may be down, or a network may be blocking its WebSocket connection.";
@@ -602,9 +683,10 @@ export class Browser {
 					text = `Something went wrong while loading ${host}.`;
 			}
 		}
-		const detail = tab.error && tab.error.kind !== "blocked" ? tab.error.detail : "";
+		const detail = tab.error && tab.error.kind !== "blocked" && tab.error.kind !== "locked" ? tab.error.detail : "";
 
-		if (!tab.notice && tab.error?.kind !== "blocked") actions.push(button("try again", "rotate-cw", () => this.reload(), true));
+		if (tab.error?.kind === "locked") actions.push(button("enter access key", "key", () => this.lock(), true));
+		else if (!tab.notice && tab.error?.kind !== "blocked") actions.push(button("try again", "rotate-cw", () => this.reload(), true));
 		if (tab.error?.kind === "dns" || tab.error?.kind === "unreachable") {
 			actions.push(
 				button("search instead", "search", () => {

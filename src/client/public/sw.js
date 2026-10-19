@@ -6,21 +6,27 @@
  * transport fetches it over Wisp. This file adds the robustness the stock example lacks:
  *
  *  - Browsers stop idle service workers. A request that wakes this worker arrives before the open
- *    pages have re-registered their prefixes, so we ask them to reconnect and wait briefly instead of
- *    letting the request fall through to the network (where it would 404).
+ *    pages have re-registered their prefixes, so we ask them to reconnect (once per restart) and wait
+ *    briefly instead of letting the request fall through to the network, where it would 404.
  *  - A proxied URL opened as a top-level page (a link opened in a new tab, window.open, a copied
  *    link, a page from an old session) is sent back into the Deblocker interface.
- *  - Requests for a prefix whose page has gone away (Deblocker was reloaded) would wait forever;
- *    they time out instead.
+ *  - Requests for a prefix whose page is gone (Deblocker was reloaded or closed) fail straight away
+ *    instead of waiting forever.
  */
 importScripts("./engine/controller.sw.js");
 
 const SCOPE = new URL(self.registration.scope).pathname;
 const PROXY_PREFIX = `${SCOPE}~/sj/`;
 const REVIVE_TIMEOUT_MS = 6000;
-// Time to the first response byte. Pages get a short limit; other requests may be long-polls.
-const NAVIGATION_TIMEOUT_MS = 30000;
-const REQUEST_TIMEOUT_MS = 180000;
+// Last-resort limit for a response to start (the browser's own fetch-event limit is about 5 minutes).
+const ROUTE_TIMEOUT_MS = 280000;
+
+/** Which window registered each controller prefix, so requests from dead sessions can be detected. */
+const owners = new Map();
+addEventListener("message", (event) => {
+	const init = event.data && event.data.$controller$init;
+	if (init && typeof init.prefix === "string" && event.source) owners.set(init.prefix, event.source.id);
+});
 
 /** Proxied URLs look like <prefix><controller id>/<frame id>/<encodeURIComponent(real URL)>. */
 function realUrlOf(url) {
@@ -33,20 +39,42 @@ function realUrlOf(url) {
 	}
 }
 
+/**
+ * Sends a top-level navigation back to the Deblocker interface. A tiny page with a meta refresh is
+ * used instead of a redirect: window.open() popups start on an about:blank page that Scramjet has
+ * already instrumented, and a redirect would let Deblocker boot inside that instrumented window.
+ */
 function backToDeblocker(real) {
-	return Response.redirect(`${SCOPE}${real ? `?url=${encodeURIComponent(real)}` : ""}`, 302);
+	const target = `${SCOPE}${real ? `?url=${encodeURIComponent(real)}` : ""}`;
+	const attribute = target.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+	return new Response(`<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=${attribute}"><title>Deblocker</title>`, {
+		status: 200,
+		headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Content-Security-Policy": "default-src 'none'" },
+	});
 }
+
+let lastRevive = 0;
 
 async function waitForController(event) {
 	if ($scramjetController.shouldRoute(event)) return true;
-	const pages = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-	for (const page of pages) page.postMessage({ $controller$swrevive: {} });
+	// One announcement per restart, however many requests woke the worker.
+	if (Date.now() - lastRevive > 2000) {
+		lastRevive = Date.now();
+		const pages = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+		for (const page of pages) page.postMessage({ $controller$swrevive: {} });
+	}
 	const started = Date.now();
 	while (Date.now() - started < REVIVE_TIMEOUT_MS) {
 		await new Promise((resolve) => setTimeout(resolve, 25));
 		if ($scramjetController.shouldRoute(event)) return true;
 	}
 	return false;
+}
+
+async function ownerIsGone(url) {
+	let owner = null;
+	for (const [prefix, id] of owners) if (url.pathname.startsWith(prefix)) owner = id;
+	return owner !== null && !(await self.clients.get(owner));
 }
 
 function failure(request, status, message) {
@@ -59,6 +87,8 @@ function failure(request, status, message) {
 	);
 }
 
+const SESSION_ENDED = "This page belongs to a Deblocker session that has ended. Reload Deblocker to continue.";
+
 addEventListener("fetch", (event) => {
 	const url = new URL(event.request.url);
 	if (url.origin !== self.location.origin || !url.pathname.startsWith(PROXY_PREFIX)) return;
@@ -66,13 +96,16 @@ addEventListener("fetch", (event) => {
 	event.respondWith(
 		(async () => {
 			if (event.request.mode === "navigate" && event.request.destination === "document") return backToDeblocker(realUrlOf(url));
-			if (!(await waitForController(event))) return failure(event.request, 503, "This page belongs to a Deblocker session that has ended. Reload Deblocker to continue.");
+			if (!(await waitForController(event))) return failure(event.request, 503, SESSION_ENDED);
+			if (await ownerIsGone(url)) return failure(event.request, 503, SESSION_ENDED);
 			let timer;
-			const limit = event.request.mode === "navigate" ? NAVIGATION_TIMEOUT_MS : REQUEST_TIMEOUT_MS;
-			const timeout = new Promise((resolve) => (timer = setTimeout(() => resolve(null), limit)));
+			const timeout = new Promise((resolve) => (timer = setTimeout(() => resolve(null), ROUTE_TIMEOUT_MS)));
 			const response = await Promise.race([$scramjetController.route(event), timeout]);
 			clearTimeout(timer);
-			return response ?? failure(event.request, 504, "The page took too long to respond through Deblocker. Try reloading it.");
+			return (
+				response ??
+				failure(event.request, 504, "No response arrived through Deblocker. The request may still have reached the site, so check before sending it again.")
+			);
 		})(),
 	);
 });
