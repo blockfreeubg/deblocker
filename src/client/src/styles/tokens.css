@@ -1,0 +1,129 @@
+/*
+ * Design tokens. Every theme is generated from a handful of hue/saturation inputs so presets stay
+ * consistent: neutrals are tinted with --n, the accent uses --a. All derived tokens live on :root
+ * (the same element that carries data-theme), so they re-resolve whenever the theme changes.
+ */
+:root {
+	--n: 222;
+	--ns: 18%;
+	--a: 190;
+	--as: 80%;
+	--al: 60%;
+
+	--bg: hsl(var(--n) var(--ns) 5.5%);
+	--bg-2: hsl(var(--n) var(--ns) 7.5%);
+	--panel: hsl(var(--n) var(--ns) 9.5%);
+	--panel-2: hsl(var(--n) var(--ns) 12.5%);
+	--panel-3: hsl(var(--n) var(--ns) 16%);
+	--line: hsl(var(--n) calc(var(--ns) * 0.8) 18%);
+	--line-strong: hsl(var(--n) calc(var(--ns) * 0.8) 25%);
+	--text: hsl(var(--n) 25% 93%);
+	--text-dim: hsl(var(--n) 14% 72%);
+	--muted: hsl(var(--n) 10% 57%);
+
+	--accent: hsl(var(--a) var(--as) 34%);
+	--accent-lit: hsl(var(--a) var(--as) var(--al));
+	--accent-soft: hsl(var(--a) var(--as) var(--al) / 0.13);
+	--accent-tint: hsl(var(--a) var(--as) var(--al) / 0.22);
+	--accent-line: hsl(var(--a) var(--as) var(--al) / 0.4);
+	--accent-ink: hsl(var(--a) 60% 8%);
+
+	--chrome: hsl(var(--n) var(--ns) 6% / 0.76);
+	--glass: hsl(var(--n) var(--ns) 6% / 0.55);
+	--glass-strong: hsl(var(--n) var(--ns) 8% / 0.82);
+	--glass-border: hsl(0 0% 100% / 0.08);
+	--glass-highlight: inset 0 1px 0 hsl(0 0% 100% / 0.05);
+	--hairline: hsl(0 0% 100% / 0.07);
+	--hover: hsl(0 0% 100% / 0.04);
+
+	--ok: hsl(150 52% 56%);
+	--warn: hsl(40 78% 63%);
+	--danger: hsl(0 74% 69%);
+	--danger-soft: hsl(0 74% 69% / 0.12);
+
+	--ridge-far: hsl(var(--n) calc(var(--ns) + 6%) 13%);
+	--ridge-mid: hsl(var(--n) calc(var(--ns) + 4%) 9%);
+	--ridge-near: hsl(var(--n) var(--ns) 6%);
+	--sky-top: hsl(var(--n) calc(var(--ns) + 10%) 9%);
+	--sky-bottom: hsl(var(--a) 30% 12%);
+	--wall-tint: hsl(var(--n) var(--ns) 5% / 0.35);
+	--wall-tint-2: hsl(var(--n) var(--ns) 5% / 0.7);
+
+	--ring: 0 0 0 3px var(--accent-soft);
+	--shadow-1: 0 1px 2px hsl(0 0% 0% / 0.4), 0 8px 24px -12px hsl(0 0% 0% / 0.7);
+	--shadow-pop: 0 18px 44px hsl(0 0% 0% / 0.5);
+	--glow: 0 0 0 1px hsl(var(--a) var(--as) var(--al) / 0.06), 0 12px 32px -16px hsl(var(--a) var(--as) var(--al) / 0.35);
+
+	--font: "Inter Variable", "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+	--mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+	--fs-2xs: 10.5px;
+	--fs-xs: 11px;
+	--fs-sm: 12px;
+	--fs-ui: 12.5px;
+	--fs-md: 13px;
+	--fs-lg: 14px;
+	--fs-h3: 16px;
+	--fs-h2: 22px;
+	--fs-hero: 46px;
+
+	--r-xs: 6px;
+	--r-sm: 8px;
+	--r: 10px;
+	--r-lg: 14px;
+	--r-xl: 18px;
+	--r-pill: 999px;
+
+	--ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+	--spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+	--t-fast: 0.16s;
+	--t: 0.18s;
+
+	--tabbar-h: 38px;
+	--toolbar-h: 50px;
+	--rail-w: 52px;
+	--bottomnav-h: 56px;
+
+	color-scheme: dark;
+}
+
+:root[data-theme="violet"] {
+	--n: 250;
+	--ns: 16%;
+	--a: 262;
+	--as: 85%;
+	--al: 74%;
+}
+
+:root[data-theme="ember"] {
+	--n: 220;
+	--ns: 12%;
+	--a: 24;
+	--as: 90%;
+	--al: 63%;
+}
+
+:root[data-theme="mint"] {
+	--n: 196;
+	--ns: 16%;
+	--a: 155;
+	--as: 58%;
+	--al: 56%;
+}
+
+:root[data-theme="rose"] {
+	--n: 250;
+	--ns: 12%;
+	--a: 340;
+	--as: 80%;
+	--al: 71%;
+}
+
+:root[data-theme="mono"] {
+	--n: 220;
+	--ns: 4%;
+	--a: 220;
+	--as: 0%;
+	--al: 90%;
+	--accent: hsl(0 0% 40%);
+	--sky-bottom: hsl(220 6% 11%);
+}
