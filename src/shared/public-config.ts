@@ -49,3 +49,8 @@ export interface SessionState {
 	required: boolean;
 	authenticated: boolean;
 }
+
+export interface PolicyDecisionResponse {
+	allowed: boolean;
+	reason?: string;
+}

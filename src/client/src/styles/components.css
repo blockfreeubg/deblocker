@@ -325,6 +325,13 @@ select.field option {
 	line-height: 1.6;
 }
 
+.page-error-detail {
+	margin: 0;
+	color: var(--muted);
+	font-size: var(--fs-xs);
+	line-height: 1.5;
+}
+
 .page-error-url {
 	margin: 2px 0 0;
 	max-width: 100%;

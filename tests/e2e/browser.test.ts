@@ -168,7 +168,8 @@ suite("browsing through Scramjet", () => {
 	it("shows a clear error when a site can't be reached", async () => {
 		await go(page, "http://127.0.0.1:9/");
 		await page.waitForSelector("#pageError:not([hidden])", { timeout: 20_000 });
-		expect(await page.textContent("#pageErrorTitle")).toMatch(/can't be reached|couldn't be loaded|took too long/);
+		expect(await page.textContent("#pageErrorTitle")).toBe("This site can't be reached");
+		expect(await page.isVisible("#frames iframe.is-active")).toBe(false);
 		expect(await page.textContent("#pageErrorUrl")).toBe("http://127.0.0.1:9/");
 		expect(await page.locator("#pageErrorActions button", { hasText: "try again" }).count()).toBe(1);
 		await page.locator("#pageErrorActions button", { hasText: "go back" }).click();
@@ -240,6 +241,32 @@ suite("browsing through Scramjet", () => {
 		await expect.poll(() => omnibox(page)).toBe(`${target.origin}/two`);
 	});
 
+	it("keeps working after the browser stops the idle service worker", async () => {
+		await go(page, `${target.origin}/`);
+		let frame = await activeFrame(page);
+		await frame.waitForSelector("#to-two");
+		const cdp = await context.newCDPSession(page);
+		await cdp.send("ServiceWorker.enable");
+		await cdp.send("ServiceWorker.stopAllWorkers");
+		await page.waitForTimeout(300);
+		frame = await activeFrame(page);
+		await frame.click("#to-two");
+		await expect.poll(() => omnibox(page)).toBe(`${target.origin}/two`);
+		frame = await activeFrame(page);
+		await frame.waitForSelector("text=Page two");
+		await cdp.detach();
+	});
+
+	it("sends proxied URLs opened directly back into the Deblocker interface", async () => {
+		const frame = await activeFrame(page);
+		const proxiedUrl = frame.url();
+		const other = await context.newPage();
+		await other.goto(proxiedUrl);
+		await other.waitForSelector("#statusChip[data-state=online]", { timeout: 20_000 });
+		await expect.poll(() => other.inputValue("#omniboxInput")).toBe(`${target.origin}/two`);
+		await other.close();
+	});
+
 	it("did not throw uncaught errors in the Deblocker page", () => {
 		expect((page as Page & { errors?: string[] }).errors ?? []).toEqual([]);
 	});
@@ -266,6 +293,28 @@ suite("default policy", () => {
 		expect(await page.textContent("#pageErrorTitle")).toBe("Blocked by this server");
 		expect(await page.textContent("#pageErrorText")).toMatch(/private network/);
 		expect(await page.locator("#frames iframe").count()).toBe(0);
+	});
+});
+
+suite("server blocklist", () => {
+	let app: RunningApp;
+	let context: BrowserContext;
+
+	beforeAll(async () => {
+		app = await startApp({ ALLOW_PRIVATE_DESTINATIONS: "true", ALLOWED_PORTS: "*", DESTINATION_BLOCKLIST: "127.0.0.1" });
+		context = await browser.newContext();
+	});
+
+	afterAll(async () => {
+		await context?.close();
+		await app?.stop();
+	});
+
+	it("explains destinations refused by the server's policy", async () => {
+		const page = await openApp(context, app);
+		await go(page, `${target.origin}/`);
+		await page.waitForSelector("#pageError:not([hidden])", { timeout: 20_000 });
+		await expect.poll(() => page.textContent("#pageErrorTitle")).toBe("Blocked by this server");
 	});
 });
 

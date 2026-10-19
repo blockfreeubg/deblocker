@@ -46,6 +46,8 @@ interface Tab {
 	slow: boolean;
 	/** Restored background tabs load only when first selected. */
 	deferred: boolean;
+	/** Incremented on every navigation, so late results for an earlier one are ignored. */
+	attempt: number;
 }
 
 export interface BrowserDeps {
@@ -55,6 +57,11 @@ export interface BrowserDeps {
 	/** Renders an internal page into the stage. */
 	showPage(page: InternalPage): void;
 	isLocked(): boolean;
+	/**
+	 * Refines a load failure: the transport reports destinations refused by the server's policy, and
+	 * destinations that can't be reached, much like a dead backend. Returns the corrected error.
+	 */
+	diagnose(error: NavigationError): Promise<NavigationError>;
 	sessionChanged(session: SavedSession): void;
 	activeChanged(place: Place | null): void;
 }
@@ -66,6 +73,9 @@ export class Browser {
 	private omniboxDirty = false;
 
 	private readonly tabsEl = $("tabs");
+	private readonly newTabButton = $("newTab");
+	/** "<tab id>:<page>" of the internal page currently on screen, so it is only rendered when it appears. */
+	private shownPage: string | null = null;
 	private readonly framesEl = $("frames");
 	private readonly omnibox = $<HTMLFormElement>("omnibox");
 	private readonly omniboxInput = $<HTMLInputElement>("omniboxInput");
@@ -81,7 +91,7 @@ export class Browser {
 	private readonly pageError = $("pageError");
 
 	constructor(private readonly deps: BrowserDeps) {
-		$("newTab").addEventListener("click", () => this.newTab());
+		this.newTabButton.addEventListener("click", () => this.newTab());
 		this.backBtn.addEventListener("click", () => this.back());
 		this.forwardBtn.addEventListener("click", () => this.forward());
 		this.reloadBtn.addEventListener("click", () => (this.active?.loading ? this.stop() : this.reload()));
@@ -154,9 +164,10 @@ export class Browser {
 			slowTimer: undefined,
 			slow: false,
 			deferred: deferred && !activate && place.kind === "web",
+			attempt: 0,
 		};
 		this.tabs.push(tab);
-		this.tabsEl.append(tab.element);
+		this.tabsEl.insertBefore(tab.element, this.newTabButton);
 		if (activate) this.select(tab);
 		if (!tab.deferred) this.display(tab, place);
 		this.renderTab(tab);
@@ -269,7 +280,6 @@ export class Browser {
 		const existing = this.tabs.find((tab) => tab.place.kind === "page" && tab.place.page === page);
 		if (existing) {
 			this.select(existing);
-			this.deps.showPage(page);
 			return;
 		}
 		if (this.active && this.active.place.kind === "page" && this.active.place.page === "home") this.navigate(this.active, { kind: "page", page });
@@ -331,6 +341,7 @@ export class Browser {
 
 	/** Makes the tab show `place`, loading it in the frame if needed. */
 	private display(tab: Tab, place: Place, forceLoad = false) {
+		tab.attempt += 1;
 		tab.place = place;
 		tab.error = null;
 		tab.notice = null;
@@ -407,6 +418,7 @@ export class Browser {
 	private onUrlChanged(tab: Tab, url: string) {
 		// The frame keeps running while the tab shows an internal page; its history stays as it was.
 		if (tab.place.kind === "page") return;
+		tab.attempt += 1;
 		const place: Place = { kind: "web", url };
 		const current = tab.history[tab.index];
 		if (tab.expectingCommit) {
@@ -452,10 +464,16 @@ export class Browser {
 		if (tab === this.active) this.renderStage();
 	}
 
+	/** Shows a load failure once it has been diagnosed (bounded, so a slow check never hides the error). */
 	private fail(tab: Tab, error: NavigationError) {
-		tab.error = error;
 		tab.expectingCommit = false;
-		this.finishLoading(tab);
+		const attempt = ++tab.attempt;
+		const fallback = new Promise<NavigationError>((resolve) => window.setTimeout(() => resolve(error), 2500));
+		Promise.race([this.deps.diagnose(error).catch(() => error), fallback]).then((final) => {
+			if (tab.attempt !== attempt) return; // the tab navigated somewhere else meanwhile
+			tab.error = final;
+			this.finishLoading(tab);
+		});
 	}
 
 	// ---------------------------------------------------------------- rendering
@@ -506,11 +524,17 @@ export class Browser {
 
 	private renderStage() {
 		const tab = this.active;
-		for (const other of this.tabs) other.frame?.iframe.classList.toggle("is-active", other === tab && tab.place.kind === "web" && !tab.notice);
+		for (const other of this.tabs) {
+			other.frame?.iframe.classList.toggle("is-active", other === tab && tab.place.kind === "web" && !tab.notice && !tab.error);
+		}
 
 		const page = tab?.place.kind === "page" ? tab.place.page : null;
 		for (const name of ["home", "settings", "about"] as const) $(`view-${name}`).hidden = page !== name;
-		if (page) this.deps.showPage(page);
+		const pageKey = page && tab ? `${tab.id}:${page}` : null;
+		if (pageKey !== this.shownPage) {
+			this.shownPage = pageKey;
+			if (page) this.deps.showPage(page);
+		}
 
 		const showLoader = Boolean(tab && tab.place.kind === "web" && tab.loading && !tab.committed && !tab.error);
 		this.loader.hidden = !showLoader;
@@ -559,7 +583,7 @@ export class Browser {
 					break;
 				case "unreachable":
 					title = "This site can't be reached";
-					text = `${host} couldn't be reached from the Deblocker server.`;
+					text = `The Deblocker server couldn't get a response from ${host}. Check the address for typos; the site may also be down or not exist.`;
 					break;
 				case "timeout":
 					title = "This site took too long to respond";
@@ -577,11 +601,11 @@ export class Browser {
 					title = "This page couldn't be loaded";
 					text = `Something went wrong while loading ${host}.`;
 			}
-			if (error.detail && error.kind !== "blocked") text += ` (${error.detail})`;
 		}
+		const detail = tab.error && tab.error.kind !== "blocked" ? tab.error.detail : "";
 
 		if (!tab.notice && tab.error?.kind !== "blocked") actions.push(button("try again", "rotate-cw", () => this.reload(), true));
-		if (tab.error?.kind === "dns") {
+		if (tab.error?.kind === "dns" || tab.error?.kind === "unreachable") {
 			actions.push(
 				button("search instead", "search", () => {
 					const query = host.replace(/^www\./, "");
@@ -589,7 +613,7 @@ export class Browser {
 				}),
 			);
 		}
-		if (tab.error && (tab.error.kind === "refused" || tab.error.kind === "tls") && url.startsWith("https://")) {
+		if (tab.error && (tab.error.kind === "refused" || tab.error.kind === "tls" || tab.error.kind === "unreachable") && url.startsWith("https://")) {
 			actions.push(button("try http://", "lock-open", () => this.navigate(tab, { kind: "web", url: `http://${url.slice("https://".length)}` })));
 		}
 		if (tab.index > 0) actions.push(button("go back", "arrow-left", () => this.back()));
@@ -598,6 +622,8 @@ export class Browser {
 		this.pageError.dataset.tone = tone;
 		$("pageErrorTitle").textContent = title;
 		$("pageErrorText").textContent = text;
+		$("pageErrorDetail").textContent = detail ? `Details: ${detail}` : "";
+		$("pageErrorDetail").hidden = !detail;
 		$("pageErrorUrl").textContent = url;
 		$("pageErrorActions").replaceChildren(...actions);
 		this.pageError.hidden = false;

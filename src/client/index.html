@@ -31,14 +31,14 @@
 						<stop offset="1" stop-color="var(--accent-lit)" stop-opacity="0" />
 					</radialGradient>
 					<mask id="bd-crescent">
-						<circle cx="1130" cy="270" r="30" fill="#fff" />
-						<circle cx="1143" cy="261" r="26" fill="#000" />
+						<circle cx="1040" cy="250" r="30" fill="#fff" />
+						<circle cx="1053" cy="241" r="26" fill="#000" />
 					</mask>
 				</defs>
 				<rect width="1600" height="900" fill="url(#bd-sky)" />
 				<g class="backdrop-stars"></g>
-				<circle cx="1130" cy="270" r="240" fill="url(#bd-glow)" />
-				<circle class="backdrop-moon" cx="1130" cy="270" r="30" mask="url(#bd-crescent)" />
+				<circle cx="1040" cy="250" r="240" fill="url(#bd-glow)" />
+				<circle class="backdrop-moon" cx="1040" cy="250" r="30" mask="url(#bd-crescent)" />
 				<path class="ridge ridge-far" d="M0 610 80 588 150 552 230 578 320 512 410 556 505 494 600 536 690 466 790 526 875 498 975 540 1075 476 1175 528 1255 500 1355 550 1450 508 1530 534 1600 520V900H0Z" />
 				<path class="ridge ridge-mid" d="M0 700 115 648 210 688 320 622 425 668 540 606 650 662 760 598 860 648 970 590 1090 656 1200 612 1310 666 1420 620 1520 656 1600 636V900H0Z" />
 				<path class="ridge ridge-near" d="M0 788C120 744 220 764 320 734 430 704 520 752 640 728 760 704 860 762 980 738 1100 714 1200 762 1320 742 1440 722 1520 752 1600 738V900H0Z" />
@@ -47,10 +47,11 @@
 
 		<div class="shell" id="shell">
 			<header class="tabbar">
-				<div class="tabs" id="tabs" role="tablist" aria-label="Tabs"></div>
-				<button class="tab-new" id="newTab" type="button" title="New tab (Alt+T)" aria-label="New tab">
-					<svg class="icon"><use href="#i-plus" /></svg>
-				</button>
+				<div class="tabs" id="tabs" role="tablist" aria-label="Tabs">
+					<button class="tab-new" id="newTab" type="button" title="New tab (Alt+T)" aria-label="New tab">
+						<svg class="icon"><use href="#i-plus" /></svg>
+					</button>
+				</div>
 				<button class="status-chip" id="statusChip" type="button" data-state="checking" title="Proxy backend status">
 					<span class="status-dot"></span>
 					<span class="status-text" id="statusText">connecting…</span>
@@ -136,7 +137,7 @@
 									spellcheck="false"
 									autocapitalize="off"
 									enterkeyhint="go"
-									placeholder="Search the web or enter an address"
+									placeholder="Search or enter an address"
 									aria-label="Search the web or enter an address"
 								/>
 								<button class="search-go" type="submit" aria-label="Go" title="Go">
@@ -182,6 +183,7 @@
 							<span class="page-error-icon" aria-hidden="true"><svg class="icon"><use href="#i-alert" /></svg></span>
 							<h2 class="page-error-title" id="pageErrorTitle"></h2>
 							<p class="page-error-text" id="pageErrorText"></p>
+							<p class="page-error-detail" id="pageErrorDetail" hidden></p>
 							<p class="page-error-url" id="pageErrorUrl"></p>
 							<div class="page-error-actions" id="pageErrorActions"></div>
 						</div>

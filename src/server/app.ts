@@ -133,6 +133,23 @@ export async function createApp(config: ServerConfig, logger: Logger, httpServer
 		res.json({ required: access.required, authenticated: !access.required } satisfies SessionState);
 	});
 
+	// Lets the interface explain a failed load accurately: the transport reports a refused destination
+	// the same way as an unreachable one. Checks the hostname rules only (no DNS lookup).
+	router.get("/api/policy", (req, res) => {
+		res.setHeader("Cache-Control", "no-store");
+		let url: URL;
+		try {
+			url = new URL(String(req.query.url ?? ""));
+			if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("scheme");
+		} catch {
+			res.status(400).json({ error: "Expected an http(s) URL in ?url=" });
+			return;
+		}
+		const port = Number(url.port || (url.protocol === "https:" ? 443 : 80));
+		const decision = policy.check(url.hostname, port);
+		res.json(decision.allowed ? { allowed: true } : { allowed: false, reason: decision.reason });
+	});
+
 	router.all(/^\/api\//, (_req, res) => {
 		res.status(404).json({ error: "Not found" });
 	});

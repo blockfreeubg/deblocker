@@ -184,10 +184,22 @@ async function main() {
 		searchTemplate,
 		hints,
 		isLocked,
+		diagnose: async (error) => {
+			if (error.kind === "blocked" || error.kind === "tls" || error.kind === "timeout") return error;
+			const decision = await api.policy(error.url).catch(() => null);
+			if (decision && !decision.allowed) return { ...error, kind: "blocked" };
+			// "Couldn't connect" can mean the backend or the destination; if the backend answers, it was the site.
+			if (error.kind === "transport" && engine.status === "ready" && (await engine.checkBackend())) return { ...error, kind: "unreachable" };
+			return error;
+		},
 		showPage: (page: InternalPage) => {
 			if (page === "home") {
 				home.renderLinks(quickLinks());
-				if (document.activeElement?.id !== "omniboxInput") requestAnimationFrame(() => home.focus());
+				// Focus the search box like a browser's new tab page, unless the visitor is typing elsewhere
+				// (and not on touch screens, where focusing would pop up the keyboard every time).
+				const focused = document.activeElement;
+				const typing = focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement || focused instanceof HTMLSelectElement;
+				if (!typing && matchMedia("(pointer: fine)").matches) home.focus();
 			} else if (page === "settings") settingsView.render();
 			else renderAbout(config);
 		},

@@ -37,6 +37,14 @@ describe("HTTP API", () => {
 		expect(text).not.toContain("k".repeat(40));
 	});
 
+	it("answers destination policy checks without resolving DNS", async () => {
+		const check = async (url: string) => (await fetch(server.url(`api/policy?url=${encodeURIComponent(url)}`))).json();
+		expect(await check("https://example.com/")).toEqual({ allowed: true });
+		expect(await check("http://127.0.0.1:8080/")).toMatchObject({ allowed: false });
+		expect(await check("https://example.com:22/")).toEqual({ allowed: false, reason: "port 22 is not allowed" });
+		expect((await fetch(server.url("api/policy?url=javascript:alert(1)"))).status).toBe(400);
+	});
+
 	it("returns JSON 404s for unknown API routes", async () => {
 		const response = await fetch(server.url("api/nope"));
 		expect(response.status).toBe(404);

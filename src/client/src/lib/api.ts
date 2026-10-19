@@ -1,4 +1,4 @@
-import type { PublicConfig, SessionState } from "../../../shared/public-config.js";
+import type { PolicyDecisionResponse, PublicConfig, SessionState } from "../../../shared/public-config.js";
 
 /** The app is always served from its base directory, so every URL is resolved relative to it. */
 export const BASE_URL = new URL("./", location.href);
@@ -35,4 +35,5 @@ export const api = {
 		}),
 	lock: () => getJson<SessionState>("api/session", { method: "DELETE" }),
 	health: () => getJson<{ status: string }>("api/health"),
+	policy: (url: string) => getJson<PolicyDecisionResponse>(`api/policy?url=${encodeURIComponent(url)}`),
 };

@@ -5,7 +5,7 @@
 	justify-content: center;
 	align-items: flex-start;
 	gap: 24px;
-	padding: 48px 24px 64px;
+	padding: clamp(32px, 9vh, 96px) 24px 64px;
 }
 
 .settings-nav {
@@ -217,7 +217,7 @@
 
 .link-row {
 	display: grid;
-	grid-template-columns: 30px minmax(0, 0.8fr) minmax(0, 1.4fr) auto;
+	grid-template-columns: 30px minmax(0, 0.8fr) minmax(0, 1.4fr) 98px;
 	align-items: center;
 	gap: 8px;
 }
@@ -239,6 +239,10 @@
 .link-row-actions {
 	display: flex;
 	gap: 4px;
+}
+
+.link-row > .btn {
+	width: 100%;
 }
 
 .links-footer {
@@ -296,11 +300,11 @@
 	}
 
 	.link-row {
-		grid-template-columns: 30px minmax(0, 1fr) auto;
+		grid-template-columns: 30px minmax(0, 1fr) 98px;
 	}
 
 	.link-row .link-url {
-		grid-column: 2 / 3;
+		grid-column: 2 / 4;
 		grid-row: 2;
 	}
 }

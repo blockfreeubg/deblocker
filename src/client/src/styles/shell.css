@@ -83,6 +83,7 @@
 }
 
 .tabs {
+	flex: 1 1 auto;
 	display: flex;
 	align-items: stretch;
 	min-width: 0;
@@ -242,6 +243,7 @@
 .tab-new {
 	flex: none;
 	align-self: center;
+	margin-left: 4px;
 	display: grid;
 	place-items: center;
 	width: 28px;
@@ -268,7 +270,6 @@
 	align-items: center;
 	gap: 7px;
 	height: 26px;
-	margin-left: auto;
 	padding: 0 10px;
 	border-radius: var(--r-pill);
 	color: var(--muted);

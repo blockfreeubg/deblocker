@@ -20,7 +20,6 @@ interface ScramjetFrame {
 	hooks: {
 		init: { post: unknown };
 		error: { request: unknown };
-		fetch: { intercept: unknown };
 	};
 	go(url: string): void;
 	reload(): void;
@@ -43,7 +42,6 @@ declare global {
 	interface Window {
 		$scramjet?: {
 			Plugin: new (name: string) => TapPlugin;
-			ScramjetHeaders: { fromRawHeaders(headers: Array<[string, string]>): unknown };
 			unrewriteUrl(url: string, context: unknown): string;
 		};
 		$scramjetController?: {
@@ -111,18 +109,26 @@ async function registerServiceWorker(base: string): Promise<ServiceWorker> {
 	return ready.active;
 }
 
-/** Maps transport / Wisp / Scramjet error text onto something we can explain to people. */
+/**
+ * Maps transport / Wisp / Scramjet error text onto something we can explain to people.
+ * libcurl reports curl error codes; epoxy reports hyper/rustls errors.
+ */
 export function classifyError(error: unknown): { kind: NavigationErrorKind; detail: string } {
 	const text = error instanceof Error ? `${error.name}: ${error.message}` : String(error ?? "");
-	const detail = text.replace(/^Error:\s*/, "").slice(0, 240);
+	const detail = text.replace(/^(Type)?Error:\s*/, "").slice(0, 240);
 	const test = (pattern: RegExp) => pattern.test(text);
-	if (test(/\b(HostBlocked|blocked|0x48|forbidden destination|non-public address)\b/i)) return { kind: "blocked", detail };
-	if (test(/resolve host|could not resolve|couldn't resolve|ENOTFOUND|EAI_AGAIN|getaddrinfo|name not resolved|dns/i)) return { kind: "dns", detail };
-	if (test(/refused|ECONNREFUSED|0x44|ConnRefused/i)) return { kind: "refused", detail };
-	if (test(/timed? ?out|timeout|ETIMEDOUT|0x47|0x43|NoResponse/i)) return { kind: "timeout", detail };
-	if (test(/unreachable|EHOSTUNREACH|ENETUNREACH|0x42/i)) return { kind: "unreachable", detail };
-	if (test(/ssl|tls|certificate|handshake|x509|peer failed/i)) return { kind: "tls", detail };
-	if (test(/websocket|wisp|ws:\/\/|wss:\/\/|failed to connect|connection (was )?closed|network ?error|0x03/i)) return { kind: "transport", detail };
+	// The Wisp backend itself is unreachable (libcurl code 7, epoxy WebSocketConnectFailed).
+	if (test(/error code 7\b|could not connect to server|WebSocketConnectFailed|websocket did not open/i)) return { kind: "transport", detail };
+	if (test(/\b(HostBlocked|0x48|non-public address)\b/i)) return { kind: "blocked", detail };
+	if (test(/error code 6\b|resolve host|could not resolve|couldn't resolve|ENOTFOUND|EAI_AGAIN|getaddrinfo/i)) return { kind: "dns", detail };
+	if (test(/refused|ECONNREFUSED|0x44/i)) return { kind: "refused", detail };
+	if (test(/error code 28\b|timed? ?out|timeout|ETIMEDOUT|0x47|0x43/i)) return { kind: "timeout", detail };
+	if (test(/error code 35\b|error code 60\b|ssl|tls|certificate|handshake|x509|InvalidContentType/i)) return { kind: "tls", detail };
+	// libcurl code 52 ("Server returned nothing") covers refused connections, unknown hosts and refused destinations alike.
+	if (test(/error code 52\b|error code 56\b|server returned nothing|IncompleteMessage|unreachable|EHOSTUNREACH|ENETUNREACH|0x42/i)) {
+		return { kind: "unreachable", detail };
+	}
+	if (test(/websocket|wisp|connection (was )?closed|network ?error/i)) return { kind: "transport", detail };
 	return { kind: "unknown", detail };
 }
 
@@ -183,6 +189,9 @@ class ScramjetProxyFrame implements ProxyFrame {
 
 	go(url: string): void {
 		if (this.destroyed) return;
+		// Forget the previous URL so the next commit is always reported, even if a redirect
+		// lands on the page that was already showing.
+		this.lastUrl = null;
 		this.ensureFrame().go(url);
 	}
 
@@ -363,13 +372,32 @@ class ScramjetEngine implements ProxyEngine {
 			serviceworker: worker,
 			transport,
 			config: {
+				// Must be absolute and inside the service worker scope; sw.js derives the same prefix.
 				prefix: `${base}~/sj/`,
 				scramjetPath: `${base}engine/scramjet.js`,
 				injectPath: `${base}engine/controller.inject.js`,
 				wasmPath: `${base}engine/scramjet.wasm`,
 			},
+			scramjetConfig: {
+				// The controller means to enable allowFailedIntercepts, but its config merge order drops it.
+				flags: { allowFailedIntercepts: true, sourcemaps: false, captureErrors: false, rewriterLogs: false },
+			},
 		});
 		await withTimeout(this.controller.wait(), START_TIMEOUT_MS, "Scramjet took too long to start. Try reloading the page.");
+
+		const controller = this.controller as ScramjetController & Record<string, any>;
+		// The controller ignores the service worker's "revive" message for 5 s after start-up. That guard
+		// only protects against the worker's own first boot, and would leave Deblocker broken if the worker
+		// restarts in that window, so turn it off.
+		controller.guardServiceWorkerRevive = false;
+		// After a service worker update the controller would keep talking to the old, redundant worker.
+		navigator.serviceWorker.addEventListener("controllerchange", () => {
+			const active = navigator.serviceWorker.controller;
+			if (active && active !== controller.serviceWorkerController) {
+				controller.serviceWorkerController = active;
+				controller.setupMessagePort?.();
+			}
+		});
 	}
 
 	private createTransport(): unknown {
@@ -398,17 +426,29 @@ class ScramjetEngine implements ProxyEngine {
 		const utils = window.$scramjetUtils;
 		const frame = controller.createFrame(iframe, { plugins: utils ? [new utils.HttpCachePlugin()] : [] });
 		const plugin = new scramjet.Plugin("deblocker");
-		const base = this.options.base;
 
 		plugin.tap(frame.hooks.init.post, (context: { isTopLevel: boolean; window: Window; client: any }) => {
-			if (!context.isTopLevel) return;
-			callbacks.urlChanged(context.client.url.href);
-			callbacks.documentReady(context.window);
-			plugin.tap(context.client.hooks.lifecycle.navigate, (_ctx: unknown, props: { url: string }) => {
-				if (typeof props?.url === "string") callbacks.urlChanged(props.url);
-			});
-			context.window.addEventListener("hashchange", () => callbacks.urlChanged(context.client.url.href), { capture: true });
-			context.window.addEventListener("popstate", () => callbacks.urlChanged(context.client.url.href), { capture: true });
+			try {
+				// Published Scramjet 2.0.67-alpha.2 turns history.pushState(state, title) without a URL into
+				// ".../undefined" (fixed upstream on main). Fill in the current URL, as browsers do.
+				context.client.Proxy(["History.prototype.pushState", "History.prototype.replaceState"], {
+					apply(call: { args: unknown[] }) {
+						if (call.args[2] === undefined || call.args[2] === null) call.args[2] = context.client.url.href;
+					},
+				});
+				if (!context.isTopLevel) return;
+				const current = () => context.client.url.href as string;
+				callbacks.urlChanged(current());
+				callbacks.documentReady(context.window);
+				// "location" events carry a relative or stale URL and are followed by a new document anyway.
+				plugin.tap(context.client.hooks.lifecycle.navigate, (navigation: { type?: string }) => {
+					if (navigation?.type !== "location") callbacks.urlChanged(current());
+				});
+				context.window.addEventListener("hashchange", () => callbacks.urlChanged(current()), { capture: true });
+				context.window.addEventListener("popstate", () => callbacks.urlChanged(current()), { capture: true });
+			} catch (error) {
+				console.warn("Deblocker: couldn't attach to a proxied document", error);
+			}
 		});
 
 		// Failed page loads get an error document; ScramjetProxyFrame shows Deblocker's error card for it.
@@ -424,23 +464,12 @@ class ScramjetEngine implements ProxyEngine {
 				headers: [
 					["content-type", "text/html; charset=utf-8"],
 					["cache-control", "no-store"],
+					// Served at the Deblocker origin and built from attacker-influenced text: no scripts, ever.
+					["content-security-policy", "default-src 'none'; style-src 'unsafe-inline'"],
 				],
 				body: errorDocument(url, kind, detail),
 			};
 		});
-
-		// Links that open a new browser window/tab would escape the Deblocker interface;
-		// send them to a new Deblocker window that opens the same address instead.
-		plugin.tap(frame.hooks.fetch.intercept, (context: { parsed: { destination: string; url: URL } }, props: any) => {
-			if (context.parsed.destination !== "document") return;
-			const target = `${location.origin}${base}?url=${encodeURIComponent(context.parsed.url.href)}`;
-			props.response = {
-				body: "",
-				status: 302,
-				statusText: "Found",
-				headers: scramjet.ScramjetHeaders.fromRawHeaders([["Location", target]]),
-			};
-		}, { after: ["scramjet-http-cache"] });
 
 		return frame;
 	}
